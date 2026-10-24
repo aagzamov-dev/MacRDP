@@ -161,8 +161,7 @@ struct SessionPane: View {
                                 .font(.caption.weight(.semibold))
                         }.padding(.horizontal, 12).padding(.vertical, 8)
                     }
-                    .buttonStyle(.plain)
-                    .background(.regularMaterial, in: Capsule())
+                    .buttonStyle(SessionToolbarButtonStyle(selected: model.sessionControlsOpen))
                     .accessibilityLabel("Session controls: " + model.keyboardControlState.title)
                     .help(model.keyboardControlState.title)
                     .accessibilityValue(model.sessionControlsOpen ? "Expanded" : "Collapsed")
@@ -188,13 +187,36 @@ struct SessionPane: View {
 
     private func desktopButton(_ action: WindowsAction, symbol: String, title: String) -> some View {
         Button { model.switchWindowsDesktop(action) } label: {
-            Image(systemName: symbol).font(.headline).frame(width: 40, height: 36)
+            Image(systemName: symbol).font(.headline).frame(width: 44, height: 40)
         }
-        .buttonStyle(.plain)
-        .background(.regularMaterial, in: Capsule())
+        .buttonStyle(SessionToolbarButtonStyle())
         .disabled(model.phase != .connected)
         .accessibilityLabel(title)
         .help(title + " (Ctrl+Windows+Arrow)")
+    }
+}
+
+struct SessionToolbarButtonStyle: ButtonStyle {
+    var selected = false
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: 44, minHeight: 40)
+            .background(.regularMaterial, in: Capsule())
+            .overlay {
+                Capsule().fill(Color.accentColor.opacity(configuration.isPressed ? 0.45 : selected ? 0.18 : 0))
+                    .allowsHitTesting(false)
+            }
+            .overlay {
+                Capsule().strokeBorder(Color.primary.opacity(configuration.isPressed ? 0.35 : 0.12), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .opacity(isEnabled ? 1 : 0.4)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 

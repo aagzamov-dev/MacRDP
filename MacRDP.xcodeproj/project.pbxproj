@@ -78,8 +78,8 @@
         A00000000000000000000013 = { isa = XCBuildConfiguration; name = Release; buildSettings = { SDKROOT = macosx; MACOSX_DEPLOYMENT_TARGET = 27.0; CLANG_ENABLE_MODULES = YES; SWIFT_VERSION = 6.0; ARCHS = arm64; GCC_C_LANGUAGE_STANDARD = c11; SWIFT_OPTIMIZATION_LEVEL = "-O"; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; }; };
         A00000000000000000000014 = { isa = XCBuildConfiguration; name = Debug; buildSettings = {
             PRODUCT_BUNDLE_IDENTIFIER = uz.macrdp.app;
-            MARKETING_VERSION = 0.2.4;
-            CURRENT_PROJECT_VERSION = 6;
+            MARKETING_VERSION = 0.2.5;
+            CURRENT_PROJECT_VERSION = 7;
             FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Vendor/Sparkle");
             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
             SWIFT_OBJC_BRIDGING_HEADER = "Sources/RDPBridge/MacRDP-Bridging-Header.h";
@@ -96,8 +96,8 @@
         }; };
         A00000000000000000000015 = { isa = XCBuildConfiguration; name = Release; buildSettings = {
             PRODUCT_BUNDLE_IDENTIFIER = uz.macrdp.app;
-            MARKETING_VERSION = 0.2.4;
-            CURRENT_PROJECT_VERSION = 6;
+            MARKETING_VERSION = 0.2.5;
+            CURRENT_PROJECT_VERSION = 7;
             FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Vendor/Sparkle");
             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
             SWIFT_OBJC_BRIDGING_HEADER = "Sources/RDPBridge/MacRDP-Bridging-Header.h";

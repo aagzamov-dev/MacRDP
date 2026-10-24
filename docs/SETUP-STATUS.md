@@ -143,3 +143,9 @@ The user made Windows App-like Retina optimization mandatory. Updated the new-ch
 - Replaced the empty standard Settings command with the real app settings action. Accessibility is the first explicit settings section, with permission status/open/check/test and restart; keyboard/gesture options have a separate selector. Settings displays the running bundle version.
 - No-transport disconnect now resumes pending update installation. Sparkle relaunch preparation releases input, shuts down the session and closes its window before exit.
 - Native checks passed for close/disconnect cleanup, repeated disconnect, deferred installation exactly once, relaunch preparation and Settings routing. The native fixture now uses the same non-auto-released window ownership as the app. These checks do not establish a real fullscreen Space animation or complete live Sparkle replacement/relaunch; those remain manual acceptance checks.
+
+## Toolbar interaction — 0.2.5
+
+- Added a shared native SwiftUI button style for the session arrows and control menu. The content shape covers the entire rectangular target, including padding; arrows now have a 44 × 40 point minimum target.
+- Presses show an accent fill, border and subtle scale animation. Open controls retain a selected tint. Disabled controls dim, Reduce Motion removes scaling/animation, and no sound is added.
+- Native smoke checks passed and the compact toolbar preview was inspected. Physical padding clicks and press feedback still need user acceptance on the installed build.
