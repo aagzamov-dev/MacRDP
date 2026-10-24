@@ -10,9 +10,9 @@ struct ContentView: View {
             else { LockView(model: model) }
         }
         .frame(minWidth: 860, minHeight: 620)
-        .sheet(isPresented: $model.settings, onDismiss: { model.settingsDidClose() }) { AppSettings(model: model) }
-        .sheet(isPresented: $model.keyboardSetup) { KeyboardSetupView(model: model) }
-        .sheet(isPresented: $model.pinChange) { ChangePINView(model: model) }
+        .sheet(isPresented: $model.settings, onDismiss: { model.settingsDidClose() }) { AppSettings(model: model).permitsAppTermination() }
+        .sheet(isPresented: $model.keyboardSetup) { KeyboardSetupView(model: model).permitsAppTermination() }
+        .sheet(isPresented: $model.pinChange) { ChangePINView(model: model).permitsAppTermination() }
         .sheet(item: $model.editor) { pc in PCEditor(model: model, pc: pc, connecting: false) }
         .sheet(item: $model.credentialPrompt) { pc in PCEditor(model: model, pc: pc, connecting: true) }
         .confirmationDialog("Delete this saved PC?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
@@ -114,7 +114,7 @@ struct SessionWindowView: View {
             if model.unlocked { SessionPane(model: model) }
             else { ContentUnavailableView("MacRDP is locked", systemImage: "lock", description: Text("Unlock from the menu bar to return to Windows.")) }
         }
-        .sheet(item: $model.certificateRequest) { CertificateView(model: model, request: $0) }
+        .sheet(item: $model.certificateRequest) { CertificateView(model: model, request: $0).permitsAppTermination() }
         .frame(minWidth: 640, minHeight: 400)
     }
 }

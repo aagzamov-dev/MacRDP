@@ -60,3 +60,5 @@ The disk image itself is now unsigned. The earlier local-certificate signature c
 ## Inline updates and restart — 0.2.6
 
 Sparkle now uses a custom native user driver in Settings → Updates for checks, progress, cancellation, errors and install/restart. Signature verification and archive installation remain handled by Sparkle. Install/restart dismisses local sheets and shuts down input before requesting app termination. The app delegate explicitly returns terminateNow. Manual restart launches a small system-shell waiter with positional arguments; it reopens the app only after the current process exits and aborts after 30 seconds if it does not. No app process is forcibly killed. Existing duplicate copies from older versions must be quit once.
+
+The modal termination policy is explicitly disabled for MacRDP's own sheets. AppKit can refuse a quit request before calling applicationShouldTerminate when a sheet has preventsApplicationTerminationWhenModal enabled. See [Apple's window termination guidance](https://developer.apple.com/videos/play/wwdc2026/289/) and the installed NSWindow header. This was reproduced in the isolated native process fixture.

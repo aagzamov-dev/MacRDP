@@ -28,10 +28,16 @@ if CommandLine.arguments.contains("--termination-fixture") {
         window.delegate = delegate
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
         sheet.isReleasedWhenClosed = false
+        sheet.contentView = NSHostingView(rootView: Text("Test sheet").permitsAppTermination())
+        sheet.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        precondition(!sheet.preventsApplicationTerminationWhenModal)
         window.beginSheet(sheet)
         model.settings = true
         Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
-            MainActor.assumeIsolated { NSApp.terminate(nil) }
+            MainActor.assumeIsolated {
+                NSApp.terminate(nil)
+            }
         }
         withExtendedLifetime(delegate) { app.run() }
     }
