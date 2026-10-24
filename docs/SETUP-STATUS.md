@@ -149,3 +149,9 @@ The user made Windows App-like Retina optimization mandatory. Updated the new-ch
 - Added a shared native SwiftUI button style for the session arrows and control menu. The content shape covers the entire rectangular target, including padding; arrows now have a 44 × 40 point minimum target.
 - Presses show an accent fill, border and subtle scale animation. Open controls retain a selected tint. Disabled controls dim, Reduce Motion removes scaling/animation, and no sound is added.
 - Native smoke checks passed and the compact toolbar preview was inspected. Physical padding clicks and press feedback still need user acceptance on the installed build.
+
+## Settings and termination — 0.2.6
+
+- Settings has separate Accessibility, Keyboard, Security and Updates sections. Update UI stays inside Settings using Sparkle 2.10.0's SPUUserDriver callbacks; the signed feed/archive/installer path is unchanged.
+- Replaced launch-before-quit restart with a bounded waiter that opens the app only after the original PID exits. Explicit application termination dismisses local sheets, closes the session and performs idempotent input/transport shutdown. Update installation prepares termination before requesting relaunch.
+- Native subprocess tests passed for app exit with an attached sheet and reopening only after a dummy parent exits. Inline update state tests cover progress, cancellation, one-shot install and error acknowledgements. These tests do not claim a complete real Sparkle replacement/relaunch of the user's installed app.

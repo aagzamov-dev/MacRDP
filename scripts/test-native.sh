@@ -16,4 +16,10 @@ xcrun swiftc -swift-version 6 -disable-sandbox -module-cache-path build/swift-mo
     -F Vendor/Sparkle -framework Sparkle -Xlinker -rpath -Xlinker "$project_dir/Vendor/Sparkle" \
     -L/opt/homebrew/lib -lfreerdp-client3 -lfreerdp3 -lwinpr3 -framework Security \
     Tests/NativeSmoke/main.swift -o build/macrdp-native-smoke
+python3 - <<'PYTEST'
+import subprocess
+for mode in ('--termination-fixture', '--restart-wait-fixture'):
+    subprocess.run(['./build/macrdp-native-smoke', mode], timeout=15, check=True)
+print('PASS real subprocess exits with a sheet open; restart waiter launches only after parent exit.')
+PYTEST
 ./build/macrdp-native-smoke

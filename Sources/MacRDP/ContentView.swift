@@ -15,7 +15,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.pinChange) { ChangePINView(model: model) }
         .sheet(item: $model.editor) { pc in PCEditor(model: model, pc: pc, connecting: false) }
         .sheet(item: $model.credentialPrompt) { pc in PCEditor(model: model, pc: pc, connecting: true) }
-        .sheet(isPresented: $model.updates) { UpdatesView(updater: model.updater) }
         .confirmationDialog("Delete this saved PC?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Delete saved PC", role: .destructive) {
                 if let pc = deleting { Task { await model.deletePC(pc) } }
@@ -346,6 +345,13 @@ struct PCEditor: View {
     }
 }
 
+enum SettingsSection: String, CaseIterable {
+    case accessibility = "Accessibility"
+    case keyboard = "Keyboard"
+    case security = "Security"
+    case updates = "Updates"
+}
+
 struct AppSettings: View {
     @ObservedObject var model: AppModel
     @State private var shortcut: KeyboardShortcut
@@ -355,7 +361,6 @@ struct AppSettings: View {
     @State private var exclusive: Bool
     @State private var shortcutError: String?
     @State private var confirmRestart = false
-    @State private var settingsPage = 0
     @Environment(\.dismiss) private var dismiss
     init(model: AppModel) {
         self.model = model
@@ -365,12 +370,11 @@ struct AppSettings: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack { Label("Settings", systemImage: "gearshape").font(.title3.weight(.semibold)); Spacer(); Text("MacRDP " + model.updater.version).font(.caption).foregroundStyle(.secondary) }.padding(24)
-            Picker("Settings section", selection: $settingsPage) {
-                Text("Accessibility").tag(0)
-                Text("Keyboard & gestures").tag(1)
-            }.pickerStyle(.segmented).padding(.horizontal, 24)
+            Picker("Settings section", selection: $model.settingsSection) {
+                ForEach(SettingsSection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 24)
             Group {
-                if settingsPage == 0 {
+                if model.settingsSection == .accessibility {
                 VStack(alignment: .leading, spacing: 16) {
                 GroupBox("Accessibility") {
                     Label(model.accessibilityGranted ? "Accessibility allowed" : "Accessibility required",
@@ -392,7 +396,7 @@ struct AppSettings: View {
                 }
                     Spacer(minLength: 0)
                 }.padding(20)
-                } else {
+                } else if model.settingsSection == .keyboard {
                 Form {
                 Section("Keyboard") {
                     HStack { Text("Mac ↔ Windows input"); Spacer(); ShortcutRecorder(shortcut: $shortcut, error: $shortcutError).frame(width: 180) }
@@ -425,16 +429,18 @@ struct AppSettings: View {
                     Text("Three-finger desktop swipes send Ctrl+Windows+Left/Right, independent of key mappings. Create a second Windows desktop first. If macOS takes the gesture, set its desktop swipe to four fingers in Trackpad settings.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("Updates") {
-                    Button("Software updates…") { model.settings = false; model.openUpdates() }
-                }
+                if let error = model.error { Text(error).foregroundStyle(.red).font(.caption) }
+                }.formStyle(.grouped)
+                } else if model.settingsSection == .updates {
+                    VStack { UpdatesView(updater: model.updater); Spacer(minLength: 0) }
+                } else {
+                    Form {
                 Section("App security") {
                     Button("Change app PIN…") { model.settings = false; model.error = nil; model.pinChange = true }
                     Text("MacRDP starts locked. After unlock, it stays open until you press Lock or quit. Locking the app keeps an established session connected.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if let error = model.error { Text(error).foregroundStyle(.red).font(.caption) }
-                }.formStyle(.grouped)
+                    }.formStyle(.grouped)
                 }
             }
             HStack {
@@ -443,7 +449,7 @@ struct AppSettings: View {
                 Button("Save settings") { model.saveSettings(shortcut: shortcut, three: three, four: four, exclusive: exclusive, mapping: mapping) }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }.padding(20)
-        }.frame(width: 580, height: 710).background(Color(nsColor: .windowBackgroundColor))
+        }.frame(width: 620, height: 600).background(Color(nsColor: .windowBackgroundColor))
         .onAppear { model.refreshKeyboardPermission() }
         .confirmationDialog("Restart MacRDP?", isPresented: $confirmRestart) {
             Button("Disconnect and restart") { Task { await model.restartApp() } }

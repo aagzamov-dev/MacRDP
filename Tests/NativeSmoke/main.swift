@@ -15,6 +15,45 @@ func render(_ view: NSView, name: String) throws {
     try png.write(to: URL(fileURLWithPath: "build/\(name).png"))
 }
 
+if CommandLine.arguments.contains("--termination-fixture") {
+    await MainActor.run {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
+        app.finishLaunching()
+        let model = AppModel(secretStore: TestSecrets())
+        let delegate = AppDelegate(model: model)
+        app.delegate = delegate
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.delegate = delegate
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        window.beginSheet(sheet)
+        model.settings = true
+        Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
+            MainActor.assumeIsolated { NSApp.terminate(nil) }
+        }
+        withExtendedLifetime(delegate) { app.run() }
+    }
+    exit(99)
+}
+if CommandLine.arguments.contains("--restart-wait-fixture") {
+    try await MainActor.run {
+        let marker = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let parent = Process(); parent.executableURL = URL(fileURLWithPath: "/bin/sleep"); parent.arguments = ["1"]
+        try parent.run()
+        let waiter = Process(); waiter.executableURL = URL(fileURLWithPath: "/bin/sh")
+        waiter.arguments = ["-c", AppRestart.waitForExitScript, "restart-test", String(parent.processIdentifier), "/usr/bin/touch", marker.path]
+        try waiter.run()
+        Thread.sleep(forTimeInterval: 0.2)
+        precondition(!FileManager.default.fileExists(atPath: marker.path))
+        parent.waitUntilExit(); waiter.waitUntilExit()
+        precondition(waiter.terminationStatus == 0 && FileManager.default.fileExists(atPath: marker.path))
+    }
+    exit(0)
+}
+
 await MainActor.run {
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
@@ -77,6 +116,11 @@ await MainActor.run {
         let settingsView = NSHostingView(rootView: AppSettings(model: model))
         settingsWindow.contentView = settingsView
         try render(settingsView, name: "client-settings-preview")
+        for section in SettingsSection.allCases {
+            model.settingsSection = section
+            try render(settingsView, name: "client-settings-" + section.rawValue.lowercased())
+        }
+        model.settingsSection = .accessibility
         let editorWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 740), styleMask: [.titled], backing: .buffered, defer: false)
         let editorView = NSHostingView(rootView: PCEditor(model: model, pc: pc, connecting: false))
         editorWindow.contentView = editorView
@@ -172,6 +216,24 @@ await MainActor.run {
         sessionModel.updater.sessionIsActive = { true }
         sessionModel.updater.check()
         precondition(sessionModel.updater.message.contains("Disconnect"))
+        sessionModel.updater.sessionIsActive = { false }
+        let inline = sessionModel.updater
+        var cancelled = false
+        inline.showDownloadInitiated { cancelled = true }
+        inline.showDownloadDidReceiveExpectedContentLength(100)
+        inline.showDownloadDidReceiveData(ofLength: 25)
+        precondition(inline.busy && inline.progress == 0.25 && inline.canCancel)
+        inline.cancel(); precondition(cancelled && !inline.busy)
+        var installs = 0
+        inline.showReady(toInstallAndRelaunch: { _ in installs += 1 })
+        inline.performAction(); inline.performAction()
+        precondition(installs == 1)
+        var acknowledgements = 0
+        inline.showUpdaterError(CocoaError(.fileReadUnknown), acknowledgement: { acknowledgements += 1 })
+        precondition(acknowledgements == 1 && !inline.busy && inline.actionTitle == nil)
+        sessionModel.openUpdates()
+        precondition(sessionModel.settings && sessionModel.settingsSection == .updates && !sessionModel.updates)
+        print("PASS inline update progress, cancellation, one-shot installation, error acknowledgement and Settings routing.")
         sessionModel.shutdown(); verified.shutdown()
         print("Native input intent, persisted release verification and active-session update guard passed.")
         print("Native view rendering and release/lock gates passed. No Keychain writes, event tap, permissions, or network connection attempted.")

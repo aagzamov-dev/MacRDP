@@ -56,3 +56,7 @@ Version 0.2.2 is the first GitHub release. It is rebuilt from committed source, 
 ## Disk-image packaging correction — 0.2.3
 
 The disk image itself is now unsigned. The earlier local-certificate signature caused Gatekeeper to assess the container on opening; Apple specifies Developer ID Application identities for signed disk images. The app, fixed credential helper, and Sparkle updates retain their existing signatures. First launch of the app still requires user approval without notarization. Validate the downloaded image on a clean Mac; a local mount does not establish Gatekeeper acceptance.
+
+## Inline updates and restart — 0.2.6
+
+Sparkle now uses a custom native user driver in Settings → Updates for checks, progress, cancellation, errors and install/restart. Signature verification and archive installation remain handled by Sparkle. Install/restart dismisses local sheets and shuts down input before requesting app termination. The app delegate explicitly returns terminateNow. Manual restart launches a small system-shell waiter with positional arguments; it reopens the app only after the current process exits and aborts after 30 seconds if it does not. No app process is forcibly killed. Existing duplicate copies from older versions must be quit once.

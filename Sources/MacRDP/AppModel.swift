@@ -57,6 +57,7 @@ final class AppModel: ObservableObject {
     @Published var isFullScreen = false
     @Published var inputMode: InputMode = .windows
     @Published var presentedFPS = 0
+    @Published var settingsSection = SettingsSection.accessibility
     @Published var updates = false
     @Published var keyboardSetup = false
     @Published private(set) var accessibilityGranted = false
@@ -584,15 +585,15 @@ final class AppModel: ObservableObject {
         suspendInput(reason: "Restarting MacRDP")
         do {
             try await restartApplication()
-            shutdown()
+            prepareForTermination()
             terminateApplication?()
         } catch {
             permissionMessage = "Could not restart MacRDP. Quit and reopen this copy of the app."
+            restarting = false
         }
-        restarting = false
     }
     func openSettings() { suspendInput(reason: "Local settings"); showMainWindow?(); error = nil; settings = true }
-    func openUpdates() { suspendInput(reason: "Updates"); showMainWindow?(); updates = true }
+    func openUpdates() { settingsSection = .updates; openSettings() }
     func saveSettings(shortcut: KeyboardShortcut, three: GestureMapping, four: GestureMapping, exclusive: Bool, mapping: ModifierMapping? = nil, dismiss: Bool = true) {
         if let problem = shortcut.validationError { error = problem; return }
         updateShortcut(shortcut)
@@ -716,9 +717,21 @@ final class AppModel: ObservableObject {
     }
 
 
+    func dismissLocalDialogs() {
+        settings = false; keyboardSetup = false; updates = false; pinChange = false
+        editor = nil; credentialPrompt = nil; certificateRequest = nil
+        suspendInput(reason: "Preparing to close MacRDP")
+    }
+    func prepareForTermination() {
+        dismissLocalDialogs()
+        shutdown()
+    }
+    private var didShutdown = false
     func shutdown() {
+        guard !didShutdown else { return }
+        didShutdown = true
         release(reason: "Application closed"); pendingStart = nil; transport?.cancel(); tap.shutdown()
-        timer?.invalidate()
+        timer?.invalidate(); timer = nil
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
         if let pointerMonitor { NSEvent.removeMonitor(pointerMonitor) }
         for observer in observers { NotificationCenter.default.removeObserver(observer); NSWorkspace.shared.notificationCenter.removeObserver(observer) }

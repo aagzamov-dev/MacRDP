@@ -10,20 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var mainWindow: NSWindow?
     private var sessionWindow: NSWindow?
     private var statusItem: NSStatusItem?
+    private var terminating = false
     private var subscriptions = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) { NSApp.applicationIconImage = icon }
-        model.restartApplication = {
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.createsNewApplicationInstance = true
-            configuration.allowsRunningApplicationSubstitution = false
-            let application = try await NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration)
-            guard application.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
-                throw CocoaError(.executableLoad)
-            }
-        }
+        model.restartApplication = { try AppRestart.schedule(bundleURL: Bundle.main.bundleURL) }
         model.terminateApplication = { NSApp.terminate(nil) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -46,8 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }.store(in: &subscriptions)
         model.updater.sessionIsActive = { [weak model] in model?.sessionRunning == true }
         model.updater.willShowUI = { [weak model] in model?.suspendInput(reason: "Software update") }
+        model.updater.willInstall = { [weak model] in model?.dismissLocalDialogs() }
         model.updater.willRelaunch = { [weak self] in
-            self?.model.shutdown()
+            self?.model.prepareForTermination()
             self?.closeSession(returnToMain: false)
         }
         model.updater.start()
@@ -55,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func showMain() {
+        guard !terminating else { return }
         model.suspendInput(reason: "MacRDP workspace")
         mainWindow?.deminiaturize(nil); mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -97,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         sessionWindow?.makeFirstResponder(model.surface)
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if terminating { return true }
         if sender === sessionWindow || sender === model.window {
             model.disconnect()
             return false
@@ -132,6 +128,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showMain(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        terminating = true
+        model.prepareForTermination()
+        for window in sender.windows {
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+        }
+        closeSession(returnToMain: false)
+        return .terminateNow
+    }
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
     func menuWillOpen(_ menu: NSMenu) {
