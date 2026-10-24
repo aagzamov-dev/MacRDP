@@ -49,6 +49,12 @@ Metal presentation and hardware video decoding solve different costs. A software
 |---|---|---|---|---|---|---|---|
 | Windows App | Not measured | Unknown | Unknown | — | — | — | Baseline pending |
 | SDL FreeRDP 3.32.2 | Not measured | Unknown | FFmpeg HW path compiled OFF | — | — | — | Baseline pending |
-| MacRDP | Not implemented | Unknown | Unknown | — | — | — | Application pending |
+| MacRDP | Implemented; native-resolution benchmark pending | Unknown | Software decoder; HW path OFF | — | — | — | Display-link presentation, background snapshots, dirty-region bridge copies |
 
 Store only sanitized aggregate results. No production screen recordings, typed content, or passwords in the repository.
+
+## Implementation checks — 2026-10-24
+
+The deterministic bridge test now verifies a 32×32 update copies 4,096 bytes into the bridge snapshot instead of the complete 6,400,000-byte 1600×1000 surface. The first frame and resolution changes still copy the full surface. This measures the bridge copy decision only, not end-to-end FPS, decoding cost, or total memory bandwidth. Presentation still takes a complete snapshot, but on a dedicated background queue with bounded reusable buffers.
+
+The displayed FPS counts new frames drawn by the native view, sampled about once per second; it is not the panel refresh rate or a measurement of key-to-pixel latency. Presentation is skipped on an inactive Space or occluded/minimized window. Consecutive mouse moves coalesce while button/keyboard order remains intact.

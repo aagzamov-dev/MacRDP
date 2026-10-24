@@ -50,9 +50,13 @@ final class RDPTransport: @unchecked Sendable {
     private let worker = DispatchQueue(label: "MacRDP FreeRDP session", qos: .userInitiated)
     private var handle: OpaquePointer?
     private var cancelled = false
+    private var modifierTranslator = ModifierTranslator()
     private var dirty = false
     private var cursor: RemoteCursor?
     private var buffers: [DisplayBuffer] = []
+    private let frameWorker = DispatchQueue(label: "MacRDP frame preparation", qos: .userInitiated)
+    private var preparingFrame = false
+    private var preparedFrame: CGImage?
     private let notify: @Sendable (TransportEvent) -> Void
 
     init(notify: @escaping @Sendable (TransportEvent) -> Void) { self.notify = notify }
@@ -113,18 +117,26 @@ final class RDPTransport: @unchecked Sendable {
         }
     }
 
+    func setModifierMapping(_ mapping: ModifierMapping) {
+        mutex.withLock {
+            if let handle { mr_input_enable(handle, false) }
+            modifierTranslator = ModifierTranslator(mapping: mapping)
+        }
+    }
     func input(enabled: Bool, capsLock: Bool = false) {
         mutex.withLock {
+            if !enabled { modifierTranslator.reset() }
             if let handle {
                 mr_input_enable(handle, enabled)
                 if enabled { mr_synchronize(handle, capsLock ? 4 : 0) }
             }
         }
     }
-    func keys(_ keys: [KeyStroke]) -> Bool {
+    func keys(_ keys: [KeyStroke], remapModifiers: Bool = true) -> Bool {
         mutex.withLock {
             guard let handle else { return false }
-            for key in keys {
+            for physical in keys {
+                guard let key = remapModifiers ? modifierTranslator.translate(physical) : physical else { continue }
                 guard let code = MacScanCode.code(key.key) else { continue }
                 if !mr_key(handle, code, key.down, key.repeating) { return false }
             }
@@ -143,12 +155,23 @@ final class RDPTransport: @unchecked Sendable {
 
     @MainActor
     func takeFrame() -> CGImage? {
-        let port: OpaquePointer? = mutex.withLock {
-            guard dirty, let handle else { return nil }
-            dirty = false
-            return handle
+        let (frame, prepare): (CGImage?, Bool) = mutex.withLock {
+            let frame = preparedFrame; preparedFrame = nil
+            let prepare = dirty && !preparingFrame && handle != nil && !cancelled
+            if prepare { dirty = false; preparingFrame = true }
+            return (frame, prepare)
         }
-        guard let port else { return nil }
+        if prepare {
+            frameWorker.async { [self] in
+                let frame = makeFrame()
+                mutex.withLock { preparedFrame = frame; preparingFrame = false }
+            }
+        }
+        return frame
+    }
+
+    private func makeFrame() -> CGImage? {
+        guard let port = mutex.withLock({ handle }) else { return nil }
         var width: UInt32 = 0, height: UInt32 = 0, stride: UInt32 = 0
         let count = mr_copy_frame(port, nil, 0, &width, &height, &stride)
         guard count > 0, count <= 512 * 1024 * 1024 else { return nil }

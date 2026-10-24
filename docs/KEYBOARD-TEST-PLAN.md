@@ -21,7 +21,7 @@ Record OS/build, keyboard/layout, app build/signing identity, permission state, 
 | K03 | Control+Tab / Control+Shift+Tab | Remote tabs move once in correct direction | NOT TESTED |
 | K04 | Configured toggle (default Control+Option+Command+G), in both directions | Local ownership promptly; no remote completing key; next toggle captures only after keys lift; session/window unchanged | NOT TESTED |
 | K05 | Command+Tab after release | Normal Mac app switch | NOT TESTED |
-| K06 | Toggle from full screen; four-finger macOS Space swipe | Toggle preserves full screen/window; swipe allows normal macOS desktop navigation with session open and connected | NOT TESTED |
+| K06 | Toggle from full screen; four-finger macOS Space swipe | Toggle preserves full screen/window; swipe allows normal macOS desktop navigation with session open and connected; returning restores Windows control after keys lift, while explicit Mac mode remains local | NOT TESTED |
 | K07 | Click Release and open local settings | Local controls receive keys; remote receives none | NOT TESTED |
 | K08 | Hold Control/Option/Command, then release/focus-change | No stuck remote modifiers; no unexpected local shortcut | NOT TESTED |
 | K09 | Command+R/E/D and Control+C/V | Correct Windows actions under physical mapping | NOT TESTED |
@@ -57,3 +57,9 @@ Use a mock input sink to inspect event order without requiring a server. Separat
 ## Observation limits
 
 Never test exit reliability by disabling Force Quit or trapping the user without a timeout/visible release. A whole-process hang may require Force Quit; document that boundary. Do not log a full key stream to disk. A temporary in-app diagnostic indicator may show named test chords only while explicitly enabled, and must be off during credentials or ordinary user typing.
+
+## Keyboard setup regression checks (2026-10-24)
+
+Native smoke coverage now includes denied/granted/revoked Accessibility state, no permission request during read-only checks, failed Settings opening, setup gating, local shortcut verification scoped to the setup window, pending capture across full-screen transitions, actual-tap gating of the active label, and relaunch success/failure using injected closures. Offscreen AppKit fixtures have no live window number, so tests supply the observed window identity directly to the local shortcut handler; physical key routing remains unverified. UI previews cover permission-denied and granted setup in light/dark mode. No real permission was changed or app restarted by these tests.
+
+Manual follow-up: enable this app's Accessibility entry, return without restarting and check detection; revoke it during capture and confirm local input; exercise the optional restart button with both disconnected and connected sessions; confirm Command+Tab opens Windows Task View after a successful timed capture test. These remain NOT TESTED on a live Windows session.

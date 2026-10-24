@@ -44,6 +44,7 @@ struct MRSession {
     DispClientContext *display;
     uint8_t *frame;
     size_t frame_capacity, frame_size;
+    uint64_t frame_copied_bytes;
     uint32_t width, height, stride;
     char *fingerprint;
 };
@@ -146,7 +147,26 @@ static BOOL end_paint(rdpContext *context) {
         if (!buffer) { pthread_mutex_unlock(&s->frame_lock); return false; }
         s->frame = buffer; s->frame_capacity = size;
     }
-    memcpy(s->frame, gdi->primary_buffer, size);
+    if (s->width != (uint32_t)gdi->width || s->height != (uint32_t)gdi->height || s->stride != gdi->stride) {
+        memcpy(s->frame, gdi->primary_buffer, size);
+        s->frame_copied_bytes += size;
+    } else {
+        const GDI_RGN *dirty = gdi->primary->hdc->hwnd->invalid;
+        int64_t left = dirty->x < 0 ? 0 : dirty->x;
+        int64_t top = dirty->y < 0 ? 0 : dirty->y;
+        int64_t right = (int64_t)dirty->x + dirty->w;
+        int64_t bottom = (int64_t)dirty->y + dirty->h;
+        if (right > gdi->width) right = gdi->width;
+        if (bottom > gdi->height) bottom = gdi->height;
+        if (right > left && bottom > top) {
+            size_t row = (size_t)(right - left) * 4;
+            for (int64_t y = top; y < bottom; y++) {
+                size_t offset = (size_t)y * gdi->stride + (size_t)left * 4;
+                memcpy(s->frame + offset, gdi->primary_buffer + offset, row);
+            }
+            s->frame_copied_bytes += row * (size_t)(bottom - top);
+        }
+    }
     s->frame_size = size; s->width = gdi->width; s->height = gdi->height; s->stride = gdi->stride;
     pthread_mutex_unlock(&s->frame_lock);
     if (s->callbacks.frame) s->callbacks.frame(s->user);
@@ -411,6 +431,13 @@ static bool enqueue(MRSession *s, MRInput event) {
     if (!s || !atomic_load(&s->connected) || atomic_load(&s->stop)) return false;
     pthread_mutex_lock(&s->input_lock);
     if (!s->input_enabled) { pthread_mutex_unlock(&s->input_lock); return false; }
+    if (event.pointer && event.flags == PTR_FLAGS_MOVE && s->count > 0) {
+        MRInput *last = &s->input[(s->head + s->count - 1) % 1024];
+        if (last->pointer && last->flags == PTR_FLAGS_MOVE && last->epoch == s->input_epoch) {
+            last->x = event.x; last->y = event.y;
+            pthread_mutex_unlock(&s->input_lock); SetEvent(s->wake); return true;
+        }
+    }
     if (s->count == 1024) {
         s->cleanup = true; s->input_enabled = false; s->count = 0;
         atomic_store(&s->stop, true);

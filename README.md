@@ -2,7 +2,7 @@
 
 Native SwiftUI/AppKit RDP client using FreeRDP 3.32.2. Includes a saved-PC list, add/edit/delete, Keychain passwords, a 4–12 digit app PIN, Retina display negotiation, dynamic resize, keyboard/mouse input, full screen, configurable input toggle, and configurable three-/four-finger gesture mappings.
 
-Switching to Mac input, changing macOS desktops, or locking MacRDP keeps an established RDP connection open. Disconnect or quit explicitly to close it.
+Switching to Mac input, changing macOS desktops, or locking MacRDP keeps an established RDP connection open. Disconnect or quit explicitly to close it. Closing a window hides it to the menu bar. New sessions prefer Windows control; leaving its Space releases input and returning restores it unless you explicitly selected Mac. Full screen uses a separate clean session window and hides the main PC list.
 
 ## Build and use
 
@@ -11,7 +11,7 @@ Switching to Mac input, changing macOS desktops, or locking MacRDP keeps an esta
 open build/app/Build/Products/Debug/MacRDP.app
 ```
 
-The local build requires this Mac's Apple Silicon Homebrew libraries and macOS **27.0+**, matching their actual deployment target. It is development signed and is not a portable/notarized distribution. The separate Swift core package targets macOS 14, but that does not establish older-OS support for the app.
+The local build requires this Mac's Apple Silicon Homebrew libraries and macOS **27.0+**, matching their actual deployment target. Development builds link Homebrew. The release packaging script bundles the native libraries; packages use a persistent local signing certificate and are not notarized. A fixed signed credential helper retains Keychain authorization across app updates. The separate Swift core package targets macOS 14, but that does not establish older-OS support for the app.
 
 1. Unlock with your existing app PIN, or create one on first launch.
 2. Choose **Add PC**. Enter the Windows address and account password inside the app. Enable **Remember password in Keychain** to reuse it.
@@ -19,6 +19,8 @@ The local build requires this Mac's Apple Silicon Homebrew libraries and macOS *
 4. **Settings** contains the shortcut recorder, system-shortcut capture option, gesture mappings, and PIN change. PC display preferences are in **Edit PC**.
 
 The default input toggle is **⌃⌥⌘G**. Ordinary RDP input works without Accessibility permission. Optional system-shortcut capture requires permission for MacRDP and verified release controls. Its first captured release has a ten-second safety limit; a successful captured shortcut release enables continuous capture for that process. Focus and heartbeat safeguards remain active.
+
+Use the menu-bar icon for quick connect/disconnect, the Mac/Windows toggle, and Updates. Signed GitHub updates are supported without an Apple Developer account; see [release instructions](docs/RELEASING.md).
 
 Read [the client guide and verification results](docs/CLIENT.md). Physical system-shortcut interception, macOS-reserved gestures, visual Retina acceptance on the real Windows PC, and Windows App performance parity remain unverified. Code-only testing reached the documented Windows host's RDP certificate; no Windows password was supplied and no authenticated Windows desktop is claimed.
 
@@ -47,3 +49,5 @@ Build the optimized variant with `MACRDP_CONFIGURATION=Release ./scripts/build-a
 - `MacRDP.xcodeproj`: application target. CMake builds only the separate dependency probe.
 
 No remote repository or publication has been created. Homebrew versions are recorded in `docs/research/dependencies.json`; `Brewfile` is not an immutable dependency lock.
+
+Install the prepared version from `build/releases/0.2.1/MacRDP-0.2.1.dmg` by dragging the app into Applications. Settings includes Command/Control/Option/Shift mappings and a Command-to-Ctrl preset. The configured release shortcut always uses physical Mac keys. Three-finger swipes use Ctrl+Windows+Left/Right; the session’s Desktops menu tests the same action.

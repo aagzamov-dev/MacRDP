@@ -1,5 +1,13 @@
 # Setup status — 2026-10-24
 
+## Input, menu bar, presentation and updater implementation
+
+- Windows input intent now defaults on per session, survives temporary focus/Space changes, and remains separate from an explicit Mac selection. Four-finger release waits for departure before recapture. Physical gesture and Windows shortcut acceptance is still pending.
+- A separate full-screen session window hides the main PC list, with a click-only Controls panel and persistent menu-bar controls. Closing windows preserves the session; Quit ends it.
+- Frame preparation is off the main thread, bridge snapshot updates copy dirty regions, presentation uses a display link with visibility gating, and pointer moves coalesce without crossing ordered input. Presented FPS is counted; no real-Windows FPS/latency claim is made.
+- Added Sparkle 2.10.0, signed GitHub appcasts/archives, Updates settings, and local packaging/draft-release scripts. Generated a dedicated update key in Keychain; no private key is in the repository. No release has been published. Updates do not require an Apple Developer account; the app now uses persistent self-signing and a fixed credential helper; it is not notarized.
+- 37 core tests, native model/menu/close/update guards and UI rendering, dirty-region/pointer queue tests, and seven localhost RDP scenarios passed during implementation. Debug/Release builds, C static analysis, sanitizer runs and packaged-app/archive/feed signature validation passed; a deliberately modified update feed was rejected. Actual trackpad/Space interactions, real Windows visuals/performance, and two-version update installation remain manual acceptance work.
+
 ## Current native RDP client
 
 The local-only prototype has been replaced by a working FreeRDP-backed client implementation. See [CLIENT.md](CLIENT.md) for the user flow, architecture, verification and boundaries. The historical entries below preserve earlier findings and do not override this update.
@@ -10,6 +18,29 @@ The local-only prototype has been replaced by a working FreeRDP-backed client im
 - The documented Windows VPN host's RDP certificate was reached and deliberately rejected without supplying credentials. No authenticated Windows login, visible Windows actions, visual Retina acceptance or performance parity is claimed.
 - Application deployment is macOS 27.0+ / Apple Silicon, matching the installed dylibs, with Homebrew development linkage. Portable packaging/notarization and hardware decoding remain separate work.
 - The implementation and tests used no screen control, did not open the app, and did not read the user's saved passwords or change permissions, VPN configuration or global input settings.
+
+### Session controls menu validation (2026-10-24)
+
+- Replaced hover/timed reveal with an explicit Controls button and a compact panel; the Mac/Windows picker label no longer compresses vertically.
+- Opening the panel releases remote input and prevents recapture until closed, preserving the selected mode. A separate release button remains visible during first-use verification.
+- Debug and Release builds, 37 core tests, and native smoke tests pass. Native previews at 640×400 verify light/dark layouts and a long PC name. Native checks cover panel input suspension and preservation of explicit Mac mode. Physical interaction with a live Windows session remains untested for this change.
+
+### Keyboard setup, permissions and Dock icon (2026-10-24)
+
+- Added one Keyboard setup sheet from Settings, session controls and the menu bar. It provides Accessibility open/check actions, automatic permission refresh, scoped local escape/button verification, and an explicit timed first-capture test.
+- The compact session button now shows actual capture status and actionable permission/setup/failure reasons. Ordinary input can upgrade after prerequisites become ready; that transition releases previously held remote input. Active status requires a running, enabled event tap.
+- Added optional restart using the current app bundle, a connected-session confirmation, and a recoverable launch error. The Dock explicitly uses the bundled AppIcon.icns artwork; the asset and bundle icon metadata remain intact.
+- Debug and Release builds, all 37 core tests, expanded native smoke tests, strict app-signature verification and bundled icon metadata checks pass.
+- Automated coverage uses injected permission/restart operations without touching real permissions or launching another app. Actual Accessibility grant, process relaunch, Dock appearance and physical shortcut interception remain manual checks.
+
+### Persistent credentials, modifier mapping and installer (2026-10-24)
+
+- Created a persistent self-signed code-signing identity in login Keychain and pinned its public certificate. Applied user-domain trust for this certificate’s code-signing policy only. Existing passwords, VPN trust and TLS policies were not changed.
+- Empirical correction: two freshly signed binaries with identical certificate-based requirements still could not share a synthetic Keychain item noninteractively on this macOS. Stable signing alone is insufficient for this build’s Keychain behavior.
+- Added a fixed signed credential helper with bidirectional caller/helper signature verification, existing service/account names, private-pipe messages and pinned source/binary hashes. The production helper is copied unchanged across releases. A two-version app test using the unchanged helper passed with Keychain interaction disabled; an untrusted caller was rejected. Tests used a separate synthetic Keychain service and cleaned their own item; real saved passwords were not read or changed.
+- Added persisted Command/Control/Option/Shift selectors, disabled-key support, a Command→Ctrl / Control→Windows preset, left/right preservation, shared-modifier reference tracking and release-before-remapping. Release shortcuts and Force Quit remain physical.
+- Three-finger detection now handles partial/empty lifts, a lower horizontal threshold, four-finger precedence and cancellation. Desktop actions use fixed Ctrl+Windows+arrows independently of mappings, with manual Desktops actions and gesture feedback for diagnosis. Actual physical three-finger routing still needs a user trackpad check; macOS-owned gestures cannot be intercepted with these APIs.
+- 44 core tests, native settings/credential lifecycle/permission checks, input queue tests and seven localhost RDP scenarios pass. Final installer verification also passed: read-only mount, app and helper signatures, unchanged helper bytes, Applications shortcut, installation instructions, checksums, signed update archive and signed appcast. Prepared a self-contained local 0.2.1 release with 32 bundled native libraries, signed update ZIP/appcast and a signed drag-to-Applications DMG. No GitHub release was published.
 
 ## Historical preparation and prototype findings
 

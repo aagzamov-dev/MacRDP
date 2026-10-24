@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import QuartzCore
 
 struct SessionSurface: NSViewRepresentable {
     let model: AppModel
@@ -15,7 +16,12 @@ struct SessionSurface: NSViewRepresentable {
 final class RemoteDesktopView: NSView {
     weak var model: AppModel?
     private var image: CGImage?
-    private var timer: Timer?
+    private var clock: CADisplayLink?
+    private var frameCount = 0
+    private var frameNeedsCounting = false
+    private var measuredAt = ProcessInfo.processInfo.systemUptime
+    var hasTouches: Bool { !points.isEmpty }
+    func synchronizeCapsLock() { capsLock = NSEvent.modifierFlags.contains(.capsLock) }
     private var resizeWork: DispatchWorkItem?
     private var lastLayout: DisplayLayout?
     private var points: [Int: TouchPoint] = [:]
@@ -49,15 +55,15 @@ final class RemoteDesktopView: NSView {
         if window != nil {
             model?.transport?.requestFrame()
             remoteCursor = model?.transport?.latestCursor
-            let clock = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.presentLatest() }
-            }
-            timer?.invalidate(); timer = clock
-            RunLoop.main.add(clock, forMode: .common)
+            clock?.invalidate()
+            let link = displayLink(target: self, selector: #selector(presentLatest))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+            link.add(to: .main, forMode: .common)
+            clock = link
             reportGeometry()
         } else { stop() }
     }
-    func stop() { timer?.invalidate(); timer = nil; resizeWork?.cancel(); model?.release(reason: "Session view changed · connection stays open") }
+    func stop() { clock?.invalidate(); clock = nil; resizeWork?.cancel(); model?.suspendInput(reason: "Session view changed · connection stays open") }
     override func layout() { super.layout(); scheduleResize() }
     override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); scheduleResize() }
     private func scheduleResize() {
@@ -74,10 +80,17 @@ final class RemoteDesktopView: NSView {
         }
         refreshCursor()
     }
-    private func presentLatest() {
+    @objc private func presentLatest() {
+        guard window?.isOnActiveSpace == true, window?.occlusionState.contains(.visible) == true,
+              window?.isMiniaturized == false, model?.unlocked == true else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - measuredAt >= 1 {
+            model?.presentedFPS = Int((Double(frameCount) / (now - measuredAt)).rounded())
+            measuredAt = now; frameCount = 0
+        }
         guard let frame = model?.transport?.takeFrame() else { return }
         let resized = image?.width != frame.width || image?.height != frame.height
-        image = frame
+        image = frame; frameNeedsCounting = true
         if resized { model?.activeResolution = "\(frame.width) × \(frame.height)"; refreshCursor() }
         needsDisplay = true
     }
@@ -86,10 +99,11 @@ final class RemoteDesktopView: NSView {
         guard let image, let context = NSGraphicsContext.current?.cgContext else { return }
         let rect = geometry.imageRect
         context.saveGState()
-        context.interpolationQuality = rect.size == CGSize(width: image.width, height: image.height) ? .none : .high
+        context.interpolationQuality = convertToBacking(rect).size == CGSize(width: image.width, height: image.height) ? .none : .high
         context.translateBy(x: rect.minX, y: rect.maxY)
         context.scaleBy(x: 1, y: -1)
         context.draw(image, in: CGRect(origin: .zero, size: rect.size))
+        if frameNeedsCounting { frameCount += 1; frameNeedsCounting = false }
         context.restoreGState()
     }
     override func keyDown(with event: NSEvent) {
@@ -107,7 +121,7 @@ final class RemoteDesktopView: NSView {
         } else { model?.nativeKey(KeyStroke(key: event.keyCode, down: KeyboardTap.modifierDown(key: event.keyCode, flags: flags))) }
     }
     override func resignFirstResponder() -> Bool {
-        model?.release(reason: "Mac input · remote session stays connected")
+        model?.suspendInput(reason: "Mac input · remote session stays connected")
         return super.resignFirstResponder()
     }
     override func updateTrackingAreas() {
@@ -127,7 +141,7 @@ final class RemoteDesktopView: NSView {
         if down {
             guard geometry.point(convert(event.locationInWindow, from: nil)) != nil else { return }
             window?.makeFirstResponder(self)
-            if model?.remoteInput != true { model?.useWindowsInput() }
+            if model?.remoteInput != true { model?.resumeWindowsInput() }
             mouseButtons.insert(event.buttonNumber)
         } else { mouseButtons.remove(event.buttonNumber) }
         send(event, flags: button | (down ? 0x8000 : 0), dragging: !down)

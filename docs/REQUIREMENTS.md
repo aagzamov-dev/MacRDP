@@ -80,9 +80,9 @@ The release key's modifier prefixes may already have been sent before G complete
 
 ### Capture state and lifecycle
 
-Represent ownership explicitly: **local**, **arming**, **captured**, **releasing**. Connection state is separate. Capture only when the connection is ready, the session surface is key/frontmost, no local modal/text field owns focus, required permissions are usable, and release handling is armed. Initially require an explicit capture action. Later allow an opt-in automatic capture on entering full screen.
+Represent ownership explicitly: **local**, **arming**, **captured**, **releasing**. Connection state is separate. Capture only when the connection is ready, the session surface is key/frontmost, no local modal/text field owns focus, required permissions are usable, and release handling is armed. New sessions prefer Windows mode. First-use permission/release verification remains required before exclusive capture; verified sessions may automatically capture on entering full screen or returning to the remote Space.
 
-Release on explicit escape, toolbar action, loss of key-window/app focus, minimization, hide, native sheet/dialog, full-screen exit, connection error, disconnect, sleep/session lock, permission loss, tap disable, or shutdown. Regaining focus must not silently recapture after a release.
+Release on explicit escape, toolbar action, loss of key-window/app focus, minimization, hide, native sheet/dialog, full-screen exit, connection error, disconnect, sleep/session lock, permission loss, tap disable, or shutdown. Latest authorized behavior: regaining remote-surface focus automatically restores the preferred Windows mode after temporary focus/Space release, but never overrides explicit Mac mode, a lock, or a capture fault.
 
 Track pressed remote keys and mouse buttons. Cleanup must be idempotent and shared by normal and failure exits. Send key-ups while transport is usable; never block local release waiting for the network. If disconnected, clear local state and reconcile on a new session. Do not dereference a freed `rdpInput` during asynchronous cleanup.
 
@@ -137,7 +137,7 @@ Start with a PC form containing name, host, port, username/domain, Connect, and 
 
 Keep NLA and TLS verification. For a self-signed/untrusted RDP certificate, show identity/fingerprint details and require an explicit per-host trust decision; verify through the existing host/admin when needed. Persist a host-specific pin only after that decision, and stop on an unexpected change. Do not add `/cert:ignore`, downgrade to legacy RDP security, or install a global trust exception to make a demo connect. The existing Kerio exception does not authenticate the Windows host.
 
-The full-screen toolbar should show host, connection status, capture status, release shortcut, Release, Disconnect, and settings access. Reveal it on pointer movement near the edge; do not put a permanent overlay over remote controls. Release input before a local dialog receives keys. Standard appearance, light/dark mode, keyboard accessibility, and readable controls are enough for the first build.
+The full-screen toolbar should show host, connection status, capture status, release shortcut, Release, Disconnect, and settings access. Open it only by clicking the small Controls button; never reveal it on hover. Keep the panel compact and labels readable. Release input before a local dialog receives keys. Standard appearance, light/dark mode, keyboard accessibility, and readable controls are enough for the first build.
 
 Preferences after the first milestone: capture mode, release shortcut/action, modifier preset, resolution/scale, clipboard opt-in, audio playback, and experimental gesture mappings. Keep advanced settings behind a compact section with sensible defaults.
 

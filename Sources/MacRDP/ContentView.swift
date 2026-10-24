@@ -10,11 +10,12 @@ struct ContentView: View {
             else { LockView(model: model) }
         }
         .frame(minWidth: 860, minHeight: 620)
-        .sheet(isPresented: $model.settings) { AppSettings(model: model) }
+        .sheet(isPresented: $model.settings, onDismiss: { model.settingsDidClose() }) { AppSettings(model: model) }
+        .sheet(isPresented: $model.keyboardSetup) { KeyboardSetupView(model: model) }
         .sheet(isPresented: $model.pinChange) { ChangePINView(model: model) }
         .sheet(item: $model.editor) { pc in PCEditor(model: model, pc: pc, connecting: false) }
         .sheet(item: $model.credentialPrompt) { pc in PCEditor(model: model, pc: pc, connecting: true) }
-        .sheet(item: $model.certificateRequest) { request in CertificateView(model: model, request: request) }
+        .sheet(isPresented: $model.updates) { UpdatesView(updater: model.updater) }
         .confirmationDialog("Delete this saved PC?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Delete saved PC", role: .destructive) {
                 if let pc = deleting { Task { await model.deletePC(pc) } }
@@ -60,8 +61,7 @@ struct ContentView: View {
                 }.padding(14)
             }.navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 330)
         } detail: {
-            if model.showSession && model.activePC != nil { SessionPane(model: model) }
-            else if model.pcs.contains(where: { $0.id == model.selection }) { pcDetail(model.profile) }
+            if model.pcs.contains(where: { $0.id == model.selection }) { pcDetail(model.profile) }
             else {
                 ContentUnavailableView {
                     Label("Your Windows PCs", systemImage: "desktopcomputer")
@@ -108,54 +108,139 @@ struct ContentView: View {
     }
 }
 
+struct SessionWindowView: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        Group {
+            if model.unlocked { SessionPane(model: model) }
+            else { ContentUnavailableView("MacRDP is locked", systemImage: "lock", description: Text("Unlock from the menu bar to return to Windows.")) }
+        }
+        .sheet(item: $model.certificateRequest) { CertificateView(model: model, request: $0) }
+        .frame(minWidth: 640, minHeight: 400)
+    }
+}
+
 struct SessionPane: View {
     @ObservedObject var model: AppModel
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Label(model.activePC?.name ?? "Windows", systemImage: "pc").font(.headline)
-                Text(model.phase.rawValue).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if model.phase == .connected {
-                    Button("Use Windows input") { model.useWindowsInput() }.disabled(model.remoteInput)
-                    Button("Mac input") { model.releaseButton() }
-                    Button { model.window?.toggleFullScreen(nil) } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
-                        .help("Toggle full screen")
+        ZStack(alignment: .top) {
+            SessionSurface(model: model)
+            if model.isConnecting {
+                VStack(spacing: 14) { ProgressView(); Text(model.phase.rawValue) }
+                    .padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if model.phase == .failed || model.phase == .disconnected {
+                ContentUnavailableView {
+                    Label(model.phase.rawValue, systemImage: "network.slash")
+                } description: { Text(model.connectionError ?? "Ready to reconnect.") }
+                actions: {
+                    if let pc = model.activePC {
+                        Button("Reconnect") { model.connect(pc) }.buttonStyle(.borderedProminent)
+                        Button("Enter login…") { model.connect(pc, askCredentials: true) }
+                    }
+                }.background(.background)
+            }
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button {
+                        model.setSessionControlsOpen(!model.sessionControlsOpen)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "slider.horizontal.3")
+                            Text(model.keyboardControlState.title)
+                                .lineLimit(1)
+                            Image(systemName: model.keyboardControlState.symbol)
+                                .foregroundStyle(model.keyboardControlState == .active ? Color.green : Color.secondary)
+                            Image(systemName: model.sessionControlsOpen ? "chevron.up" : "chevron.down")
+                                .font(.caption.weight(.semibold))
+                        }.padding(.horizontal, 12).padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                    .background(.regularMaterial, in: Capsule())
+                    .accessibilityValue(model.sessionControlsOpen ? "Expanded" : "Collapsed")
+                    if !model.buttonVerified || model.rehearsing || (model.capture && !model.captureValidated) {
+                        Button("Release to Mac") { model.releaseButton() }
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
-                Button(model.isConnecting ? "Cancel" : "Disconnect") { model.disconnect() }
-                    .disabled(!model.sessionRunning)
-            }.padding(.horizontal, 16).padding(.vertical, 12)
-            ZStack {
-                SessionSurface(model: model)
-                if model.isConnecting {
-                    VStack(spacing: 14) { ProgressView(); Text("\(model.phase.rawValue) \(model.activePC?.host ?? "PC")") }
-                        .padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-                }
-                if model.phase == .failed || model.phase == .disconnected {
-                    ContentUnavailableView {
-                        Label(model.phase.rawValue, systemImage: "network.slash")
-                    } description: {
-                        Text(model.connectionError ?? "Your saved PC is ready whenever you want to reconnect.")
-                    } actions: {
-                        if let pc = model.activePC {
-                            Button("Reconnect") { model.connect(pc) }.buttonStyle(.borderedProminent)
-                            Button("Enter login…") { model.connect(pc, askCredentials: true) }
-                        }
-                    }.background(.background)
+                if model.sessionControlsOpen {
+                    SessionControls(model: model)
+                } else if model.capture && !model.captureValidated {
+                    Text(model.keyboardControlDetail)
+                        .font(.callout.weight(.medium)).multilineTextAlignment(.center)
+                        .padding(12).frame(maxWidth: 400)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            HStack(spacing: 12) {
-                Label(model.remoteInput ? "Windows input" : "Mac input", systemImage: model.remoteInput ? "keyboard.fill" : "keyboard")
-                    .foregroundStyle(model.remoteInput ? Color.accentColor : .secondary)
-                Text(model.shortcut.displayName + " to toggle")
-                Spacer()
-                Text(model.activeResolution)
-                if model.activePC?.optimizeRetina == true { Text("Retina") }
-                Text(model.dynamicResize ? "Dynamic resize" : "Fixed / awaiting display control")
-            }.font(.caption).padding(10).background(.bar)
-            Text(model.status).font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.bottom, 6)
+            .padding(12)
         }
+        .onDisappear { model.setSessionControlsOpen(false) }
+    }
+}
+
+struct SessionControls: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(model.activePC?.name ?? "Windows", systemImage: "desktopcomputer")
+                .font(.headline).lineLimit(2)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Keyboard & mouse").font(.subheadline.weight(.medium))
+                Picker("Keyboard and mouse control", selection: Binding(get: { model.inputMode }, set: {
+                    if $0 == .mac { model.releaseButton() }
+                    model.setSessionControlsOpen(false)
+                    if $0 == .windows { model.useWindowsInput() }
+                })) {
+                    Text("Mac").tag(InputMode.mac)
+                    Text("Windows").tag(InputMode.windows)
+                }
+                .pickerStyle(.segmented).labelsHidden().disabled(model.phase != .connected)
+                Text(model.shortcut.displayName + " to switch control")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            HStack {
+                Label(model.activeResolution, systemImage: "display")
+                Spacer(minLength: 8)
+                Text("\(model.presentedFPS) FPS").monospacedDigit()
+            }.font(.caption).foregroundStyle(.secondary)
+            Text(model.keyboardControlDetail)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Keyboard setup…") { model.openKeyboardSetup() }
+                Spacer()
+                Menu("Desktops") {
+                    Button("← Previous desktop") { model.switchWindowsDesktop(.desktopLeft) }
+                    Button("Next desktop →") { model.switchWindowsDesktop(.desktopRight) }
+                }.disabled(model.phase != .connected)
+            }
+            HStack {
+                Button {
+                    model.setSessionControlsOpen(false)
+                    model.window?.toggleFullScreen(nil)
+                } label: {
+                    Label(model.isFullScreen ? "Exit full screen" : "Full screen",
+                          systemImage: model.isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                }
+                Spacer()
+                Button {
+                    model.openSettings()
+                    model.setSessionControlsOpen(false)
+                } label: { Label("Settings", systemImage: "gearshape") }
+            }
+            Button(model.isConnecting ? "Cancel connection" : "Disconnect", role: .destructive) {
+                model.disconnect()
+                model.setSessionControlsOpen(false)
+            }.frame(maxWidth: .infinity).disabled(!model.sessionRunning)
+        }
+        .padding(16)
+        .frame(width: 360)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
     }
 }
 
@@ -164,6 +249,7 @@ struct PCEditor: View {
     @State private var draft: PCProfile
     @State private var password = ""
     @State private var saving = false
+    @State private var advanced = false
     let connecting: Bool
     @Environment(\.dismiss) private var dismiss
 
@@ -177,17 +263,18 @@ struct PCEditor: View {
                 Section("Connection") {
                     TextField("Name", text: $draft.name)
                     TextField("Address", text: $draft.host, prompt: Text("Hostname or IP address"))
-                    TextField("Port", text: $draft.port)
                 }
                 Section("Windows login") {
                     TextField("Username", text: $draft.username)
-                    TextField("Domain (optional)", text: $draft.domain)
                     SecureField(connecting ? "Windows password" : "New password (optional)", text: $password)
                     Toggle("Remember password in Keychain", isOn: $draft.rememberPassword)
                     Text(connecting ? "Use your account password, not your Windows Hello PIN." : "Leave blank to keep the saved password for this address and account. Changing either removes the old saved password.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("Display") {
+                Section {
+                    DisclosureGroup("Advanced settings", isExpanded: $advanced) {
+                    TextField("Port", text: $draft.port)
+                    TextField("Domain (optional)", text: $draft.domain)
                     Toggle("Optimize for Retina", isOn: $draft.optimizeRetina)
                     Picker("Windows UI scale", selection: $draft.desktopScale) {
                         Text("Automatic").tag(0)
@@ -196,6 +283,7 @@ struct PCEditor: View {
                     Toggle("Open in full screen", isOn: $draft.openFullScreen)
                     Text("Retina uses the view’s backing pixels. Resolution updates automatically when the server supports display control. Changes to this PC apply to the next connection.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
                 }
                 if let error = model.error { Text(error).font(.caption).foregroundStyle(.red) }
             }.formStyle(.grouped)
@@ -222,13 +310,14 @@ struct AppSettings: View {
     @State private var shortcut: KeyboardShortcut
     @State private var three: GestureMapping
     @State private var four: GestureMapping
+    @State private var mapping: ModifierMapping
     @State private var exclusive: Bool
     @State private var shortcutError: String?
     @Environment(\.dismiss) private var dismiss
     init(model: AppModel) {
         self.model = model
         _shortcut = State(initialValue: model.shortcut); _three = State(initialValue: model.threeFinger)
-        _four = State(initialValue: model.fourFinger); _exclusive = State(initialValue: model.captureSystemShortcuts)
+        _four = State(initialValue: model.fourFinger); _mapping = State(initialValue: model.modifierMapping); _exclusive = State(initialValue: model.captureSystemShortcuts)
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -240,21 +329,37 @@ struct AppSettings: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Restore default \(KeyboardShortcut.default.displayName)") { shortcut = .default; shortcutError = nil }.buttonStyle(.link)
                     Toggle("Capture Mac system shortcuts", isOn: $exclusive)
-                    Text("Optional: forwards Command+Tab as Windows+Tab. Requires MacRDP Accessibility permission and verified release controls. During initial verification, exclusive capture has a 10-second timeout. Ordinary RDP input does not need this permission.")
+                    Text("Accessibility and a one-time release check are required. Your release shortcut always uses the physical Mac keys.")
                         .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Label("Shortcut", systemImage: model.shortcutVerified ? "checkmark.circle.fill" : "circle")
-                        Label("Release", systemImage: model.buttonVerified ? "checkmark.circle.fill" : "circle")
-                        Spacer()
-                        Button("Verify saved toggle") { model.rehearse() }
+                    Button("Keyboard setup & permissions…") {
+                        model.saveSettings(shortcut: shortcut, three: three, four: four, exclusive: exclusive, mapping: mapping, dismiss: false)
+                        if model.error == nil { model.openKeyboardSetup() }
                     }
                     if let shortcutError { Text(shortcutError).foregroundStyle(.red).font(.caption) }
+                }
+                Section("Mac keys → Windows keys") {
+                    Picker("Command ⌘", selection: $mapping.command) { modifierChoices }
+                    Picker("Control ⌃", selection: $mapping.control) { modifierChoices }
+                    Picker("Option ⌥", selection: $mapping.option) { modifierChoices }
+                    Picker("Shift ⇧", selection: $mapping.shift) { modifierChoices }
+                    HStack {
+                        Button("Command copies & pastes") { mapping = .macCopyPaste }
+                        Button("Standard Windows mapping") { mapping = .standard }
+                    }
+                    Text(mapping.copyPasteHint).font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Trackpad gestures") {
                     Picker("Three fingers", selection: $three) { ForEach(GestureMapping.allCases, id: \.self) { Text($0.title).tag($0) } }
                     Picker("Four fingers", selection: $four) { ForEach(GestureMapping.allCases, id: \.self) { Text($0.title).tag($0) } }
-                    Text("macOS may reserve a gesture before the app sees it. These settings do not change system gesture preferences. Mac desktop navigation releases input and leaves the RDP session open.")
+                    Text(model.gestureFeedback).font(.caption).foregroundStyle(.secondary)
+                    Button("Open macOS Trackpad settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.trackpad")!)
+                    }
+                    Text("Three-finger desktop swipes send Ctrl+Windows+Left/Right, independent of key mappings. Create a second Windows desktop first. If macOS takes the gesture, set its desktop swipe to four fingers in Trackpad settings.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Updates") {
+                    Button("Software updates…") { model.settings = false; model.openUpdates() }
                 }
                 Section("App security") {
                     Button("Change app PIN…") { model.settings = false; model.error = nil; model.pinChange = true }
@@ -266,10 +371,13 @@ struct AppSettings: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save settings") { model.saveSettings(shortcut: shortcut, three: three, four: four, exclusive: exclusive) }
+                Button("Save settings") { model.saveSettings(shortcut: shortcut, three: three, four: four, exclusive: exclusive, mapping: mapping) }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }.padding(20)
         }.frame(width: 580, height: 710).background(Color(nsColor: .windowBackgroundColor))
+    }
+    private var modifierChoices: some View {
+        ForEach(WindowsModifier.allCases, id: \.self) { Text($0.rawValue).tag($0) }
     }
 }
 

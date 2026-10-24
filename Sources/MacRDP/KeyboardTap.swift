@@ -29,6 +29,7 @@ final class KeyboardTap: @unchecked Sendable {
     init(notify: @escaping @Sendable (CaptureNotice) -> Void) { self.notify = notify }
 
     var isCapturing: Bool { mutex.withLock { machine.state == .captured } }
+    var isEnabled: Bool { mutex.withLock { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false } }
     var isReady: Bool { mutex.withLock { ready } }
     var generation: UInt64 { mutex.withLock { machine.generation } }
 
@@ -105,7 +106,8 @@ final class KeyboardTap: @unchecked Sendable {
         if let failure { return failure }
         guard let port = mutex.withLock({ tap }) else { return "The keyboard tap is unavailable." }
         CGEvent.tapEnable(tap: port, enable: true)
-        guard isCapturing else {
+        guard isCapturing, isEnabled else {
+            release(reason: "macOS did not enable the keyboard tap", notify: false)
             CGEvent.tapEnable(tap: port, enable: false)
             return "macOS disabled the input tap during startup. Your keyboard remains local."
         }

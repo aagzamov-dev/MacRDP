@@ -16,6 +16,7 @@ public struct TrackpadGesture: Sendable {
     private var fired = false
     private var cancelled = false
     private var maximumCount = 0
+    private var pendingThreeFingerAction: TrackpadAction?
     public init() {}
 
     public mutating func reset() {
@@ -23,6 +24,7 @@ public struct TrackpadGesture: Sendable {
         fired = false
         cancelled = false
         maximumCount = 0
+        pendingThreeFingerAction = nil
     }
 
     public mutating func update(_ touches: [TouchPoint], ended: Bool = false,
@@ -31,13 +33,21 @@ public struct TrackpadGesture: Sendable {
                                 fourFinger: GestureMapping = .macDesktops) -> TrackpadAction? {
         if isCancelled { cancelled = true }
         if touches.isEmpty {
+            let action = ended && !cancelled && !fired && maximumCount == 3 ? pendingThreeFingerAction : nil
             reset()
-            return nil
+            return action
         }
         guard !fired, !cancelled else { return nil }
         maximumCount = max(maximumCount, touches.count)
         if touches.count > 4 { cancelled = true; return nil }
-        if touches.count < 3 { return nil }
+        if maximumCount == 4 { pendingThreeFingerAction = nil }
+        if touches.count < 3 {
+            if ended, maximumCount == 3, let action = pendingThreeFingerAction {
+                fired = true
+                return action
+            }
+            return nil
+        }
         let ids = Set(touches.map(\.id))
         if Set(origins.keys) != ids {
             if !origins.isEmpty, touches.count <= origins.count { cancelled = true; return nil }
@@ -51,19 +61,17 @@ public struct TrackpadGesture: Sendable {
             fired = true
             return .release
         }
-        // A three-finger action commits on lift, allowing a fourth finger to take priority.
-        guard ended else { return nil }
+        let action: TrackpadAction?
         switch mapping {
-        case .disabled: return nil
-        case .macDesktops:
-            guard max(abs(dx), abs(dy)) >= 0.12 else { return nil }
-            fired = true; return .release
-        case .taskView:
-            guard max(abs(dx), abs(dy)) >= 0.14 else { return nil }
-            fired = true; return .taskView
+        case .disabled: action = nil
+        case .macDesktops: action = max(abs(dx), abs(dy)) >= 0.12 ? .release : nil
+        case .taskView: action = max(abs(dx), abs(dy)) >= 0.14 ? .taskView : nil
         case .windowsDesktops:
-            guard abs(dx) >= 0.14, abs(dx) > abs(dy) * 1.5 else { return nil }
-            fired = true; return dx < 0 ? .desktopLeft : .desktopRight
+            action = abs(dx) >= 0.10 && abs(dx) > abs(dy) * 1.5 ? (dx < 0 ? .desktopLeft : .desktopRight) : nil
         }
+        if maximumCount == 3 { pendingThreeFingerAction = action }
+        guard ended, let action else { return nil }
+        fired = true
+        return action
     }
 }

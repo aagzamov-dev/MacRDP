@@ -10,7 +10,7 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
     public var rememberPassword = true
     public var optimizeRetina = true
     public var desktopScale = 0
-    public var openFullScreen = false
+    public var openFullScreen = true
 
     public init() {}
     public var endpoint: String { "\(host.lowercased()):\(port)" }
@@ -37,7 +37,7 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
         rememberPassword = try c.decodeIfPresent(Bool.self, forKey: .rememberPassword) ?? true
         optimizeRetina = try c.decodeIfPresent(Bool.self, forKey: .optimizeRetina) ?? true
         desktopScale = try c.decodeIfPresent(Int.self, forKey: .desktopScale) ?? 0
-        openFullScreen = try c.decodeIfPresent(Bool.self, forKey: .openFullScreen) ?? false
+        openFullScreen = try c.decodeIfPresent(Bool.self, forKey: .openFullScreen) ?? true
     }
 }
 
