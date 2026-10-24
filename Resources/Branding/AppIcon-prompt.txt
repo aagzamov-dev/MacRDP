@@ -1,0 +1,7 @@
+Tool: built-in image_gen (transparent background)
+
+Create one finished macOS application icon for MacRDP, a native remote desktop client. Square 1024 by 1024 composition with a genuinely transparent outer background. Design a premium, restrained macOS squircle tile in rich cobalt blue with a subtle lighter cyan highlight at the upper left, soft sculpted edge and a gentle realistic shadow. Center a large elegant ivory-white desktop monitor silhouette: rounded rectangular screen frame, blue inset screen, a short sturdy stem and small base. Inside the monitor, place exactly two simple bold opposing horizontal arrows, one pointing right above one pointing left, suggesting seamless switching between Mac and a remote Windows PC. Arrows ivory white with a small pale aqua accent. Make the symbol optically balanced and beautifully legible at 16–64 pixels. Front facing, carefully aligned geometry, subtle dimensional material, tasteful soft lighting, no excessive gloss. Tile occupies approximately 84 percent of canvas width and height, centered, with transparent margins for the standard macOS icon silhouette. No text, no letters, no Microsoft logo, no Apple logo, no badges, no cables, no extra screens, no mockup environment, no checkerboard. Deliver the actual app icon artwork, not a presentation.
+
+Original artwork: MacRDP.png
+Xcode asset: Sources/MacRDP/Assets.xcassets/AppIcon.appiconset
+The original output is preserved. Standard macOS icon sizes were generated with sips and packaged by Xcode.

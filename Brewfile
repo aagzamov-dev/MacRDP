@@ -1,0 +1,5 @@
+brew "freerdp"
+brew "sdl3"
+brew "cmake"
+brew "ninja"
+brew "pkgconf"
