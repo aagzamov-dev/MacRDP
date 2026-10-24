@@ -70,6 +70,7 @@ final class AppModel: ObservableObject {
     private let keyboardAccess: KeyboardAccess
     private var setupAfterSettings = false
     private var permissionCheckTime = Date.distantPast
+    var closeSessionWindow: (() -> Void)?
     var showSessionWindow: (() -> Void)?
     var showMainWindow: (() -> Void)?
     var fullScreenTransition = false
@@ -290,10 +291,9 @@ final class AppModel: ObservableObject {
                 certificateRequest = nil
                 tap.setInputSink(nil, release: nil)
                 transport = nil; surface?.clearDesktop(); presentedFPS = 0
+                if value == .failed { connectionError = ConnectionFailure.message(code) }
+                closeSessionPresentation()
                 updater.sessionEnded()
-                if value == .failed {
-                    connectionError = ConnectionFailure.message(code)
-                }
             }
         case .certificate(let request):
             guard unlocked else { transport?.certificate(accept: false); return }
@@ -305,8 +305,17 @@ final class AppModel: ObservableObject {
     func disconnect() {
         release(reason: "Disconnecting…")
         pendingStart = nil
-        if transport == nil { phase = .disconnected; certificateRequest = nil }
-        else { transport?.cancel() }
+        certificateRequest = nil
+        closeSessionPresentation()
+        if transport == nil {
+            phase = .disconnected
+            updater.sessionEnded()
+        } else { transport?.cancel() }
+    }
+    private func closeSessionPresentation() {
+        guard showSession || window != nil else { return }
+        showSession = false; sessionControlsOpen = false
+        closeSessionWindow?()
     }
     func decideCertificate(accept: Bool, remember: Bool) {
         guard let request = certificateRequest else { return }

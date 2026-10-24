@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.contentViewController = NSHostingController(rootView: ContentView(model: model))
         window.center(); mainWindow = window
         model.showMainWindow = { [weak self] in self?.showMain() }
+        model.closeSessionWindow = { [weak self] in self?.closeSession() }
         model.showSessionWindow = { [weak self] in self?.showSession() }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: "MacRDP")
@@ -45,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }.store(in: &subscriptions)
         model.updater.sessionIsActive = { [weak model] in model?.sessionRunning == true }
         model.updater.willShowUI = { [weak model] in model?.suspendInput(reason: "Software update") }
+        model.updater.willRelaunch = { [weak self] in
+            self?.model.shutdown()
+            self?.closeSession(returnToMain: false)
+        }
         model.updater.start()
         model.start(); showMain()
     }
@@ -55,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.activate(ignoringOtherApps: true)
     }
     private func showSession() {
-        guard model.unlocked, model.activePC != nil else { showMain(); return }
+        guard model.unlocked, model.sessionRunning, model.activePC != nil else { showMain(); return }
         if sessionWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -75,13 +80,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         model.surface?.reportGeometry()
         if model.isFullScreen { mainWindow?.orderOut(nil) }
     }
+    func closeSession(returnToMain: Bool = true) {
+        let window = sessionWindow ?? model.window
+        sessionWindow = nil
+        model.window = nil
+        model.isFullScreen = false; model.fullScreenTransition = false
+        window?.delegate = nil
+        if let sheet = window?.attachedSheet { window?.endSheet(sheet) }
+        window?.close()
+        if returnToMain { showMain() }
+    }
+    func showSettings() { model.openSettings() }
     func windowDidBecomeKey(_ notification: Notification) {
         guard notification.object as? NSWindow === sessionWindow, model.unlocked,
               sessionWindow?.attachedSheet == nil, !model.settings, !model.updates, !model.pinChange else { return }
         sessionWindow?.makeFirstResponder(model.surface)
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        model.suspendInput(reason: "Hidden to menu bar · session stays connected")
+        if sender === sessionWindow || sender === model.window {
+            model.disconnect()
+            return false
+        }
+        model.suspendInput(reason: "Hidden to menu bar")
         sender.orderOut(nil)
         return false
     }

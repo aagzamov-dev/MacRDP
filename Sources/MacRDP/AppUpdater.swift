@@ -12,6 +12,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
     var sessionIsActive: () -> Bool = { false }
     var willShowUI: (() -> Void)?
+    var willRelaunch: (() -> Void)?
     private var started = false
     private var pendingInstall: (() -> Void)?
     private lazy var controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
@@ -35,6 +36,19 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         pendingInstall = nil
         install()
     }
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        prepareForRelaunch()
+    }
+    func prepareForRelaunch() {
+        pendingInstall = nil
+        willRelaunch?()
+    }
+    func postponeInstallation(_ install: @escaping () -> Void) -> Bool {
+        guard sessionIsActive() else { return false }
+        pendingInstall = install
+        message = "Update ready. Installation will continue after you disconnect Windows."
+        return true
+    }
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         if sessionIsActive() {
             throw NSError(domain: "MacRDP.Updates", code: 1, userInfo: [NSLocalizedDescriptionKey: "Updates wait until your Windows session is disconnected."])
@@ -47,10 +61,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) { message = "You’re up to date." }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) { message = error.localizedDescription }
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
-        guard sessionIsActive() else { return false }
-        pendingInstall = installHandler
-        message = "Update ready. Installation will continue after you disconnect Windows."
-        return true
+        postponeInstallation(installHandler)
     }
 }
 

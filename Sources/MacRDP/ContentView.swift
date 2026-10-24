@@ -333,6 +333,7 @@ struct AppSettings: View {
     @State private var exclusive: Bool
     @State private var shortcutError: String?
     @State private var confirmRestart = false
+    @State private var settingsPage = 0
     @Environment(\.dismiss) private var dismiss
     init(model: AppModel) {
         self.model = model
@@ -341,9 +342,15 @@ struct AppSettings: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Label("Settings", systemImage: "gearshape").font(.title3.weight(.semibold)); Spacer() }.padding(24)
-            Form {
-                Section("Keyboard access & restart") {
+            HStack { Label("Settings", systemImage: "gearshape").font(.title3.weight(.semibold)); Spacer(); Text("MacRDP " + model.updater.version).font(.caption).foregroundStyle(.secondary) }.padding(24)
+            Picker("Settings section", selection: $settingsPage) {
+                Text("Accessibility").tag(0)
+                Text("Keyboard & gestures").tag(1)
+            }.pickerStyle(.segmented).padding(.horizontal, 24)
+            Group {
+                if settingsPage == 0 {
+                VStack(alignment: .leading, spacing: 16) {
+                GroupBox("Accessibility") {
                     Label(model.accessibilityGranted ? "Accessibility allowed" : "Accessibility required",
                           systemImage: model.accessibilityGranted ? "checkmark.circle.fill" : "exclamationmark.triangle")
                         .foregroundStyle(model.accessibilityGranted ? Color.green : Color.orange)
@@ -361,6 +368,10 @@ struct AppSettings: View {
                         .font(.caption).foregroundStyle(.secondary)
                     if let message = model.permissionMessage { Text(message).font(.caption).foregroundStyle(.orange) }
                 }
+                    Spacer(minLength: 0)
+                }.padding(20)
+                } else {
+                Form {
                 Section("Keyboard") {
                     HStack { Text("Mac ↔ Windows input"); Spacer(); ShortcutRecorder(shortcut: $shortcut, error: $shortcutError).frame(width: 180) }
                     Text("Click to record a shortcut. Toggling input keeps the connection and full screen intact.")
@@ -401,7 +412,9 @@ struct AppSettings: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red).font(.caption) }
-            }.formStyle(.grouped)
+                }.formStyle(.grouped)
+                }
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)

@@ -136,3 +136,10 @@ The user made Windows App-like Retina optimization mandatory. Updated the new-ch
 - Moved Accessibility status, Open Accessibility, Check permission, keyboard test entry and Restart MacRDP to the first Settings section. The existing guarded test flow and session restart confirmation are reused.
 - Removed the local-certificate signature from the DMG container. The app and Sparkle signatures and credential helper remain unchanged in identity. Apple requires Developer ID Application signing for signed DMGs.
 - 44 core tests and native smoke checks passed; Settings and compact session previews were inspected. Release build and DMG checksum verification passed. The local 0.2.3 installer is prepared, not published. Physical outside-click interaction, live Windows desktop changes and first-download Gatekeeper behavior remain manual checks; local verification does not establish those outcomes.
+
+## Session close and Settings routing — 0.2.4
+
+- Explicit disconnect immediately closes the session window and returns to the workspace; terminal connection events also close it. Closing a session window disconnects, while closing the main workspace still hides to the menu bar. Fullscreen state and window references are cleared, including when disconnecting before transport creation.
+- Replaced the empty standard Settings command with the real app settings action. Accessibility is the first explicit settings section, with permission status/open/check/test and restart; keyboard/gesture options have a separate selector. Settings displays the running bundle version.
+- No-transport disconnect now resumes pending update installation. Sparkle relaunch preparation releases input, shuts down the session and closes its window before exit.
+- Native checks passed for close/disconnect cleanup, repeated disconnect, deferred installation exactly once, relaunch preparation and Settings routing. The native fixture now uses the same non-auto-released window ownership as the app. These checks do not establish a real fullscreen Space animation or complete live Sparkle replacement/relaunch; those remain manual acceptance checks.

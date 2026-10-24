@@ -86,6 +86,7 @@ await MainActor.run {
         sessionModel.isFullScreen = true; sessionModel.captureValidated = true; sessionModel.buttonVerified = true
         let sessionWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
         sessionModel.window = sessionWindow
+        sessionWindow.isReleasedWhenClosed = false
         let sessionView = NSHostingView(rootView: SessionWindowView(model: sessionModel))
         sessionWindow.contentView = sessionView
         try render(sessionView, name: "client-fullscreen-preview")
@@ -136,8 +137,32 @@ await MainActor.run {
         precondition(menu.items.contains { $0.title == "Quit MacRDP" })
         delegate.menuDidClose(menu)
         precondition(!sessionModel.menuOpen)
+        sessionModel.closeSessionWindow = { delegate.closeSession() }
+        sessionModel.window = sessionWindow
+        sessionModel.showSession = true
+        sessionModel.isFullScreen = true
+        sessionModel.fullScreenTransition = true
+        var installations = 0
+        sessionModel.updater.sessionIsActive = { sessionModel.sessionRunning }
+        precondition(sessionModel.updater.postponeInstallation { installations += 1 })
+        sessionModel.updater.sessionEnded()
+        precondition(installations == 0)
         precondition(!delegate.windowShouldClose(sessionWindow))
-        precondition(sessionModel.phase == .connected)
+        precondition(sessionModel.phase == .disconnected)
+        precondition(!sessionModel.showSession && sessionModel.window == nil && !sessionWindow.isVisible)
+        precondition(!sessionModel.isFullScreen && !sessionModel.fullScreenTransition)
+        precondition(installations == 1)
+        sessionModel.disconnect()
+        sessionModel.updater.sessionEnded()
+        precondition(installations == 1)
+        var relaunchPrepared = false
+        sessionModel.updater.willRelaunch = { relaunchPrepared = true }
+        sessionModel.updater.prepareForRelaunch()
+        precondition(relaunchPrepared)
+        delegate.showSettings()
+        precondition(sessionModel.settings)
+        sessionModel.settings = false
+        print("PASS disconnect and session close dismiss the window, reset fullscreen state, resume a deferred update once, and route Settings to the real view.")
         precondition(!delegate.applicationShouldTerminateAfterLastWindowClosed(app))
         sessionModel.phase = .disconnected
         sessionModel.pcs = [pc]
