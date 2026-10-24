@@ -129,3 +129,10 @@ The user made Windows App-like Retina optimization mandatory. Updated the new-ch
 - Removed automatic hide/full-screen-exit actions from input release. Added a recorded, persisted keyboard toggle in Settings, shortcut validation, re-verification after binding changes, and key-lift gating before recapture. Added active-Space/visibility checks and Space-change release without altering the window.
 - Core behavioral tests now total 24 passing cases. The native smoke test also checks binding persistence and that release retains the session window; generated workspace/settings previews were inspected.
 - Physical capture, custom-shortcut round trips and three-/four-finger delivery on this build remain unverified. RDP/Retina rendering are still pending; no actual Windows result is claimed.
+
+## Session controls and installer correction — 0.2.3
+
+- Added an outside-click dismissal layer that consumes the dismissal click, compact Mac/Windows control icons with status help, and always-visible Previous/Next Windows desktop buttons.
+- Moved Accessibility status, Open Accessibility, Check permission, keyboard test entry and Restart MacRDP to the first Settings section. The existing guarded test flow and session restart confirmation are reused.
+- Removed the local-certificate signature from the DMG container. The app and Sparkle signatures and credential helper remain unchanged in identity. Apple requires Developer ID Application signing for signed DMGs.
+- 44 core tests and native smoke checks passed; Settings and compact session previews were inspected. Release build and DMG checksum verification passed. The local 0.2.3 installer is prepared, not published. Physical outside-click interaction, live Windows desktop changes and first-download Gatekeeper behavior remain manual checks; local verification does not establish those outcomes.

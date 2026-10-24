@@ -27,7 +27,7 @@ Sparkle’s separate Ed25519 signatures protect the archive and feed. Self-signi
 ./scripts/package-release.sh 0.2.1
 ```
 
-This builds Release, bundles the linked Homebrew libraries and their available license notices, checks the app signature, creates the update ZIP, signs the appcast, and creates a signed disk image. The output is `build/releases/0.2.1/`, including a signed ZIP, signed appcast, drag-to-Applications DMG, and checksums. It does not upload anything. An existing version folder is never overwritten. Versions must increase; the default numeric build number is a UTC timestamp.
+This builds Release, bundles the linked Homebrew libraries and their available license notices, checks the app signature, creates the update ZIP, signs the appcast, and creates an unsigned disk image containing the signed app. The output is `build/releases/0.2.1/`, including a signed ZIP, signed appcast, drag-to-Applications DMG, and checksums. It does not upload anything. An existing version folder is never overwritten. Versions must increase; the default numeric build number is a UTC timestamp.
 
 The app still requires macOS 27+ and Apple Silicon because of the installed FreeRDP dependencies. Packaging does not establish compatibility with older macOS versions. Keep the deployment target aligned with bundled libraries.
 
@@ -52,3 +52,7 @@ Open `build/releases/0.2.1/MacRDP-0.2.1.dmg`, quit the old MacRDP process, and d
 ## First public release
 
 Version 0.2.2 is the first GitHub release. It is rebuilt from committed source, rather than uploading the earlier local 0.2.1 package. Install the DMG from the GitHub release once; future stable releases use the same update feed and signing keys.
+
+## Disk-image packaging correction — 0.2.3
+
+The disk image itself is now unsigned. The earlier local-certificate signature caused Gatekeeper to assess the container on opening; Apple specifies Developer ID Application identities for signed disk images. The app, fixed credential helper, and Sparkle updates retain their existing signatures. First launch of the app still requires user approval without notarization. Validate the downloaded image on a clean Mac; a local mount does not establish Gatekeeper acceptance.

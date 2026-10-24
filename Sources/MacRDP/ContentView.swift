@@ -141,24 +141,32 @@ struct SessionPane: View {
                     }
                 }.background(.background)
             }
+            if model.sessionControlsOpen {
+                Color.clear.contentShape(Rectangle())
+                    .onTapGesture { model.setSessionControlsOpen(false) }
+                    .accessibilityLabel("Close session controls")
+            }
             VStack(spacing: 8) {
                 HStack(spacing: 8) {
+                    desktopButton(.desktopLeft, symbol: "chevron.left", title: "Previous Windows desktop")
                     Button {
                         model.setSessionControlsOpen(!model.sessionControlsOpen)
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "slider.horizontal.3")
-                            Text(model.keyboardControlState.title)
-                                .lineLimit(1)
-                            Image(systemName: model.keyboardControlState.symbol)
-                                .foregroundStyle(model.keyboardControlState == .active ? Color.green : Color.secondary)
+                            Image(systemName: model.inputMode == .mac ? "apple.logo" : "square.grid.2x2.fill")
+                                .font(.title3)
+                            Circle().fill(model.keyboardControlState == .active ? Color.green : Color.orange)
+                                .frame(width: 6, height: 6)
                             Image(systemName: model.sessionControlsOpen ? "chevron.up" : "chevron.down")
                                 .font(.caption.weight(.semibold))
                         }.padding(.horizontal, 12).padding(.vertical, 8)
                     }
                     .buttonStyle(.plain)
                     .background(.regularMaterial, in: Capsule())
+                    .accessibilityLabel("Session controls: " + model.keyboardControlState.title)
+                    .help(model.keyboardControlState.title)
                     .accessibilityValue(model.sessionControlsOpen ? "Expanded" : "Collapsed")
+                    desktopButton(.desktopRight, symbol: "chevron.right", title: "Next Windows desktop")
                     if !model.buttonVerified || model.rehearsing || (model.capture && !model.captureValidated) {
                         Button("Release to Mac") { model.releaseButton() }
                             .buttonStyle(.borderedProminent)
@@ -176,6 +184,17 @@ struct SessionPane: View {
             .padding(12)
         }
         .onDisappear { model.setSessionControlsOpen(false) }
+    }
+
+    private func desktopButton(_ action: WindowsAction, symbol: String, title: String) -> some View {
+        Button { model.switchWindowsDesktop(action) } label: {
+            Image(systemName: symbol).font(.headline).frame(width: 40, height: 36)
+        }
+        .buttonStyle(.plain)
+        .background(.regularMaterial, in: Capsule())
+        .disabled(model.phase != .connected)
+        .accessibilityLabel(title)
+        .help(title + " (Ctrl+Windows+Arrow)")
     }
 }
 
@@ -313,6 +332,7 @@ struct AppSettings: View {
     @State private var mapping: ModifierMapping
     @State private var exclusive: Bool
     @State private var shortcutError: String?
+    @State private var confirmRestart = false
     @Environment(\.dismiss) private var dismiss
     init(model: AppModel) {
         self.model = model
@@ -323,6 +343,24 @@ struct AppSettings: View {
         VStack(spacing: 0) {
             HStack { Label("Settings", systemImage: "gearshape").font(.title3.weight(.semibold)); Spacer() }.padding(24)
             Form {
+                Section("Keyboard access & restart") {
+                    Label(model.accessibilityGranted ? "Accessibility allowed" : "Accessibility required",
+                          systemImage: model.accessibilityGranted ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                        .foregroundStyle(model.accessibilityGranted ? Color.green : Color.orange)
+                    HStack {
+                        Button("Open Accessibility") { model.openKeyboardPermissionSettings() }
+                        Button("Check permission") { model.refreshKeyboardPermission() }
+                    }
+                    Text(model.keyboardControlDetail).font(.caption).foregroundStyle(.secondary)
+                    Button("Test keyboard control…") { openKeyboardTest() }
+                    Button(model.restarting ? "Restarting…" : "Restart MacRDP") {
+                        if model.sessionRunning { confirmRestart = true }
+                        else { Task { await model.restartApp() } }
+                    }.disabled(model.restarting)
+                    Text("After enabling permission, check again. Restart if macOS still denies access.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let message = model.permissionMessage { Text(message).font(.caption).foregroundStyle(.orange) }
+                }
                 Section("Keyboard") {
                     HStack { Text("Mac ↔ Windows input"); Spacer(); ShortcutRecorder(shortcut: $shortcut, error: $shortcutError).frame(width: 180) }
                     Text("Click to record a shortcut. Toggling input keeps the connection and full screen intact.")
@@ -331,10 +369,6 @@ struct AppSettings: View {
                     Toggle("Capture Mac system shortcuts", isOn: $exclusive)
                     Text("Accessibility and a one-time release check are required. Your release shortcut always uses the physical Mac keys.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("Keyboard setup & permissions…") {
-                        model.saveSettings(shortcut: shortcut, three: three, four: four, exclusive: exclusive, mapping: mapping, dismiss: false)
-                        if model.error == nil { model.openKeyboardSetup() }
-                    }
                     if let shortcutError { Text(shortcutError).foregroundStyle(.red).font(.caption) }
                 }
                 Section("Mac keys → Windows keys") {
@@ -375,6 +409,16 @@ struct AppSettings: View {
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }.padding(20)
         }.frame(width: 580, height: 710).background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { model.refreshKeyboardPermission() }
+        .confirmationDialog("Restart MacRDP?", isPresented: $confirmRestart) {
+            Button("Disconnect and restart") { Task { await model.restartApp() } }
+        } message: {
+            Text("This disconnects Windows and locks MacRDP. Save settings before restarting to keep your changes.")
+        }
+    }
+    private func openKeyboardTest() {
+        model.saveSettings(shortcut: shortcut, three: three, four: four, exclusive: exclusive, mapping: mapping, dismiss: false)
+        if model.error == nil { model.openKeyboardSetup() }
     }
     private var modifierChoices: some View {
         ForEach(WindowsModifier.allCases, id: \.self) { Text($0.rawValue).tag($0) }

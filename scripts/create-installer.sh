@@ -8,7 +8,6 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! -d "$staging/MacRDP.app" ]];
 fi
 installer="$staging/MacRDP-$version.dmg"
 if [[ -e "$installer" ]]; then echo 'Installer already exists; use a new release folder.' >&2; exit 1; fi
-identity="$("$project_dir/scripts/signing-identity.sh")"
 installer_tmp="$(mktemp -d "${TMPDIR:-/tmp}/macrdp-installer.XXXXXX")"
 trap 'rm -rf "$installer_tmp"' EXIT
 ditto "$staging/MacRDP.app" "$installer_tmp/MacRDP.app"
@@ -30,6 +29,5 @@ Keyboard Accessibility permission is separate: use Keyboard setup & permissions 
 For future updates, use Updates in MacRDP once a newer GitHub release is published.
 TEXT
 hdiutil create -volname "MacRDP $version" -srcfolder "$installer_tmp" -format UDZO "$installer"
-codesign --force --sign "$identity" --timestamp=none "$installer"
-codesign --verify --strict "$installer"
+hdiutil verify "$installer"
 echo "Drag-to-Applications installer: $installer"
