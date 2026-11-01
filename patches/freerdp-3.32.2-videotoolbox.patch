@@ -1,0 +1,73 @@
+--- a/libfreerdp/codec/h264_ffmpeg.c
++++ b/libfreerdp/codec/h264_ffmpeg.c
+@@ -28,6 +28,12 @@
+ #include <freerdp/utils/helpers.h>
+ #include <libavcodec/avcodec.h>
+ #include <libavutil/opt.h>
++#include <libavutil/pixdesc.h>
++#include <stdatomic.h>
++
++static _Atomic UINT32 macrdp_backend = 0;
++FREERDP_API UINT32 freerdp_macrdp_decoder_backend(void) { return atomic_load(&macrdp_backend); }
++FREERDP_API void freerdp_macrdp_decoder_reset(void) { atomic_store(&macrdp_backend, 0); }
+ #include <libswscale/swscale.h>
+ 
+ #include "h264.h"
+@@ -670,9 +676,7 @@
+ 	sys->videoFrame->format = AV_PIX_FMT_YUV420P;
+ 
+ #if defined(WITH_FFMPEG_HWACCEL)
+-	status = avcodec_receive_frame(sys->codecDecoderContext, (sys->useHwDecoder && sys->hwctx)
+-	                                                             ? sys->hwVideoFrame
+-	                                                             : sys->videoFrame);
++	status = avcodec_receive_frame(sys->codecDecoderContext, sys->hwVideoFrame);
+ #else
+ 	status = avcodec_receive_frame(sys->codecDecoderContext, sys->videoFrame);
+ #endif
+@@ -701,7 +705,14 @@
+ 
+ #if defined(WITH_FFMPEG_HWACCEL)
+ 
+-	if (sys->hwctx)
++	const BOOL decodedHardware = sys->hwVideoFrame->format == AV_PIX_FMT_VIDEOTOOLBOX &&
++	                             sys->hwVideoFrame->hw_frames_ctx != nullptr;
++	if (!sys->hwVideoFrame->hw_frames_ctx)
++	{
++		av_frame_unref(sys->videoFrame);
++		av_frame_move_ref(sys->videoFrame, sys->hwVideoFrame);
++	}
++	else
+ 	{
+ 		AVFrame* target = sys->videoFrame;
+ 		if (sys->hwFrameSupportsNativeFormat < 0)
+@@ -787,6 +798,7 @@
+ 
+ 		h264->YUVWidth = WINPR_ASSERTING_INT_CAST(UINT32, sys->videoFrame->width);
+ 		h264->YUVHeight = WINPR_ASSERTING_INT_CAST(UINT32, sys->videoFrame->height);
++		atomic_store(&macrdp_backend, decodedHardware ? 2 : 1);
+ 		rc = 1;
+ 	}
+ 	else
+@@ -1107,7 +1119,7 @@
+ 		av_buffer_unref(&ctx->hw_device_ctx);
+ 		for (const enum AVPixelFormat* p = fmts; *p != AV_PIX_FMT_NONE; p++)
+ 		{
+-			if (*p != sys->hw_pix_fmt)
++			if (!(av_pix_fmt_desc_get(*p)->flags & AV_PIX_FMT_FLAG_HWACCEL))
+ 				return *p;
+ 		}
+ 		return AV_PIX_FMT_NONE;
+@@ -1160,6 +1172,13 @@
+ 		}
+ 	}
+ 
++	sys->useHwDecoder = FALSE;
++	av_buffer_unref(&ctx->hw_device_ctx);
++	for (const enum AVPixelFormat* p = fmts; *p != AV_PIX_FMT_NONE; p++)
++	{
++		if (!(av_pix_fmt_desc_get(*p)->flags & AV_PIX_FMT_FLAG_HWACCEL))
++			return *p;
++	}
+ 	return AV_PIX_FMT_NONE;
+ }
+ 

@@ -28,10 +28,18 @@ struct LockView: View {
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
                 .disabled(model.loading || pin.isEmpty || (model.needsPIN && confirmation.isEmpty))
-            }.textFieldStyle(.roundedBorder).frame(width: 310)
+                Divider()
+                Button("Unlock with Touch ID or Mac password") {
+                    pin = ""; confirmation = ""
+                    Task { await model.unlockWithMac() }
+                }.disabled(model.loading)
+                Button("Forgot PIN? Reset with Mac account") {
+                    pin = ""; confirmation = ""; model.error = nil; model.pinReset = true
+                }.buttonStyle(.link).disabled(model.loading)
+            }.textFieldStyle(.roundedBorder).frame(width: 350)
             Text("Starts locked every launch. Stays open until you press Lock.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Saved passwords stay in macOS Keychain. Keep your PIN somewhere safe.")
+            Text("Saved passwords stay in macOS Keychain. Your Mac account can reset this app’s PIN.")
                 .font(.caption2).foregroundStyle(.tertiary)
         }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(.background)
@@ -76,5 +84,35 @@ struct ChangePINView: View {
             }
         }.textFieldStyle(.roundedBorder).padding(28).frame(width: 400)
             .interactiveDismissDisabled(saving)
+    }
+}
+
+struct ResetPINView: View {
+    @ObservedObject var model: AppModel
+    @State private var replacement = ""
+    @State private var confirmation = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Reset app PIN", systemImage: "lock.rotation").font(.title3.weight(.semibold))
+            Text("Verify with Touch ID or your Mac login password. Your saved PCs and passwords will be kept.")
+                .foregroundStyle(.secondary)
+            SecureField("New PIN · 4–12 digits", text: $replacement)
+            SecureField("Confirm new PIN", text: $confirmation)
+            if let error = model.error { Text(error).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.error = nil; dismiss() }
+                    .keyboardShortcut(.cancelAction).disabled(model.loading)
+                Button("Authenticate & reset PIN") {
+                    let new = replacement, repeated = confirmation
+                    replacement = ""; confirmation = ""
+                    Task { await model.resetPINWithMac(replacement: new, confirmation: repeated) }
+                }.buttonStyle(.borderedProminent)
+                    .disabled(model.loading || replacement.isEmpty || confirmation.isEmpty)
+            }
+        }.textFieldStyle(.roundedBorder).padding(28).frame(width: 430)
+            .interactiveDismissDisabled(model.loading)
     }
 }

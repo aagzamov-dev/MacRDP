@@ -17,6 +17,10 @@ actor VaultService {
     func open(pin: String, setup: Bool) throws {
         if setup { try loaded().setup(pin: pin) } else { try loaded().unlock(pin: pin) }
     }
+    func openAfterOwnerAuthentication() throws { try loaded().unlockAfterOwnerAuthentication() }
+    func resetPINAfterOwnerAuthentication(_ pin: String) throws {
+        vault = try AppVault.resetPINAfterOwnerAuthentication(pin, store: store)
+    }
     func lock() { vault?.lock() }
     func password(_ id: UUID) throws -> String? { try loaded().password(profile: id) }
     func hasPassword(_ id: UUID) throws -> Bool { try loaded().password(profile: id) != nil }
@@ -54,9 +58,32 @@ final class AppModel: ObservableObject {
         didSet { if showSession { showSessionWindow?() } }
     }
     @Published private(set) var sessionControlsOpen = false
+    @Published private(set) var sessionControlsPosition = SessionControlsPosition.topCenter
+    @Published private(set) var reverseHorizontalScrolling = false
+    @Published private(set) var keepAwake = true
+    private(set) var sleepActivity: NSObjectProtocol?
+    @Published private(set) var clipboardSharing = true
+    private var clipboardGeneration: UInt64 = 1
+    var writeClipboard: (String) -> Void = { text in
+        let clipboard = NSPasteboard.general
+        clipboard.clearContents()
+        clipboard.setString(text, forType: .string)
+    }
     @Published var isFullScreen = false
     @Published var inputMode: InputMode = .windows
     @Published var presentedFPS = 0
+    @Published var performanceDetail = "Waiting for display updates"
+    @Published var reconnectMessage: String?
+    @Published var sessionNotice: String?
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttempt = 0
+    private var intentionalDisconnect = false
+    private var sessionEstablished = false
+    private var pendingPaste: String?
+    var effectiveModifierMapping: ModifierMapping { activePC?.modifierMapping ?? modifierMapping }
+    var effectiveClipboardSharing: Bool { activePC?.clipboardSharing ?? clipboardSharing }
+    var usesTextInput: Bool { activePC?.textInputMode == .text }
+    var wantsExclusiveCapture: Bool { captureSystemShortcuts && !usesTextInput }
     @Published var settingsSection = SettingsSection.accessibility
     @Published var updates = false
     @Published var keyboardSetup = false
@@ -78,13 +105,18 @@ final class AppModel: ObservableObject {
     var menuOpen = false
     private var ownership = InputOwnership()
     @Published var activePC: PCProfile?
-    @Published var phase: SessionPhase = .disconnected
+    @Published var phase: SessionPhase = .disconnected {
+        didSet { updateSleepActivity() }
+    }
     @Published var connectionError: String?
     @Published var activeResolution = "Waiting for desktop"
     @Published var dynamicResize = false
     @Published var hasPassword = false
     @Published var settings = false
     @Published var pinChange = false
+    @Published var pinReset = false
+    private let macAuthentication: any MacAuthenticating
+    private var authenticationGeneration = UUID()
     @Published private(set) var shortcut = KeyboardShortcut.default
     @Published var threeFinger: GestureMapping = .windowsDesktops
     @Published var fourFinger: GestureMapping = .macDesktops
@@ -97,13 +129,16 @@ final class AppModel: ObservableObject {
     private let vault: VaultService
     private let defaults: UserDefaults
     private let store: PCStore
-    private var presentation: NSApplication.PresentationOptions?
+    private let sessionPresentation: SessionPresentation
     private var timer: Timer?
     private var began = Date()
     private var keyboardMonitor: Any?
     private var pointerMonitor: Any?
     private var observers: [NSObjectProtocol] = []
     private var keyboardToggle = KeyboardToggle()
+    private var vpnTask: Task<Void, Never>?
+    private let sessionVPN: SessionVPN
+    @Published var vpnStatus: String?
     private var pendingStart: (PCProfile, String)?
     private var sessionGeneration = UUID()
     private var credentialGeneration = UUID()
@@ -131,10 +166,13 @@ final class AppModel: ObservableObject {
     var profile: PCProfile { pcs.first { $0.id == selection } ?? PCProfile() }
     var releaseVerified: Bool { shortcutVerified && buttonVerified }
     var isConnecting: Bool { phase == .connecting || phase == .authenticating }
-    var sessionRunning: Bool { isConnecting || phase == .connected }
-    var canCapture: Bool { unlocked && phase == .connected && releaseVerified && !capture && !preparingCapture && !rehearsing && !sessionControlsOpen && !keyboardSetup && !settings && !pinChange && certificateRequest == nil && credentialPrompt == nil }
+    var sessionRunning: Bool { isConnecting || phase == .connected || phase == .reconnecting }
+    var canCapture: Bool { unlocked && phase == .connected && releaseVerified && !capture && !preparingCapture && !rehearsing && !sessionControlsOpen && !keyboardSetup && !settings && !pinChange && !pinReset && certificateRequest == nil && credentialPrompt == nil }
 
-    init(defaults: UserDefaults = .standard, secretStore: any SecretStore = HelperSecretStore(), keyboardAccess: KeyboardAccess = .live) {
+    init(defaults: UserDefaults = .standard, secretStore: any SecretStore = HelperSecretStore(), keyboardAccess: KeyboardAccess = .live, macAuthentication: any MacAuthenticating = MacAuthentication(), sessionPresentation: SessionPresentation = SessionPresentation(), sessionVPN: SessionVPN = SessionVPN()) {
+        self.sessionVPN = sessionVPN
+        self.sessionPresentation = sessionPresentation
+        self.macAuthentication = macAuthentication
         self.keyboardAccess = keyboardAccess
         accessibilityGranted = keyboardAccess.isTrusted()
         vault = VaultService(store: secretStore)
@@ -147,6 +185,10 @@ final class AppModel: ObservableObject {
         threeFinger = GestureMapping(rawValue: defaults.string(forKey: "threeFingerAction") ?? "") ?? .windowsDesktops
         fourFinger = GestureMapping(rawValue: defaults.string(forKey: "fourFingerAction") ?? "") ?? .macDesktops
         captureSystemShortcuts = defaults.object(forKey: "captureSystemShortcuts") == nil || defaults.bool(forKey: "captureSystemShortcuts")
+        sessionControlsPosition = SessionControlsPosition(rawValue: defaults.string(forKey: "sessionControlsPosition") ?? "") ?? .topCenter
+        reverseHorizontalScrolling = defaults.bool(forKey: "reverseHorizontalScrolling")
+        keepAwake = defaults.object(forKey: "keepAwake") == nil || defaults.bool(forKey: "keepAwake")
+        clipboardSharing = defaults.object(forKey: "clipboardSharing") == nil || defaults.bool(forKey: "clipboardSharing")
         if let data = defaults.data(forKey: "verifiedCaptureShortcut"),
            let verified = try? JSONDecoder().decode(KeyboardShortcut.self, from: data), verified == shortcut {
             shortcutVerified = true; buttonVerified = true; captureValidated = true
@@ -167,22 +209,68 @@ final class AppModel: ObservableObject {
         guard !loading else { return }
         if needsPIN && pin != confirmation { error = "The PINs do not match."; return }
         loading = true; error = nil
+        let generation = authenticationGeneration
+        let setup = needsPIN
         Task {
             do {
-                try await vault.open(pin: pin, setup: needsPIN)
+                try await vault.open(pin: pin, setup: setup)
+                guard generation == authenticationGeneration else { await vault.lock(); return }
                 unlocked = true; needsPIN = false
-            } catch { await vault.lock(); self.error = error.localizedDescription }
+            } catch {
+                guard generation == authenticationGeneration else { return }
+                await vault.lock(); self.error = error.localizedDescription
+            }
             loading = false
         }
     }
+    func unlockWithMac() async {
+        await authenticateWithMac(replacement: nil)
+    }
+
+    func resetPINWithMac(replacement: String, confirmation: String) async {
+        guard replacement == confirmation else { error = "The new PINs do not match."; return }
+        guard PINRecord.valid(replacement) else { error = "Use 4–12 digits for your new PIN."; return }
+        await authenticateWithMac(replacement: replacement)
+    }
+
+    private func authenticateWithMac(replacement: String?) async {
+        guard !loading, !didShutdown else { return }
+        loading = true; error = nil
+        suspendInput(reason: "Mac authentication")
+        let generation = authenticationGeneration
+        do {
+            try await macAuthentication.authenticate(reason: replacement == nil
+                ? "unlock your saved remote desktops" : "reset your app PIN and keep your saved remote desktops")
+            guard generation == authenticationGeneration else { return }
+            if let replacement { try await vault.resetPINAfterOwnerAuthentication(replacement) }
+            else { try await vault.openAfterOwnerAuthentication() }
+            guard generation == authenticationGeneration else { await vault.lock(); return }
+            needsPIN = try await vault.needsSetup()
+            guard generation == authenticationGeneration else { await vault.lock(); return }
+            unlocked = true; pinReset = false
+        } catch {
+            guard generation == authenticationGeneration else { return }
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func cancelAuthentication() {
+        authenticationGeneration = UUID()
+        macAuthentication.cancel()
+    }
+
     func lockApp() {
+        cancelAuthentication()
+        cancelReconnect()
+        pendingPaste = nil
         release(reason: "App locked · session stays connected")
         credentialGeneration = UUID()
         if isConnecting { disconnect() }
         if certificateRequest != nil { decideCertificate(accept: false, remember: false) }
         pendingStart = nil
         credentialPrompt = nil; editor = nil
-        unlocked = false; settings = false; keyboardSetup = false; pinChange = false; hasPassword = false; error = nil
+        unlocked = false; settings = false; keyboardSetup = false; pinChange = false; pinReset = false; hasPassword = false; error = nil
         loading = true
         Task { await vault.lock(); loading = false }
     }
@@ -213,6 +301,57 @@ final class AppModel: ObservableObject {
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
+    func persistProfile(_ profile: PCProfile) {
+        guard let index = pcs.firstIndex(where: { $0.id == profile.id }) else { return }
+        var updated = pcs; updated[index] = profile
+        do { try store.save(updated); pcs = updated } catch { self.error = error.localizedDescription }
+    }
+    func toggleFavorite(_ pc: PCProfile) {
+        var next = pc; next.favorite.toggle(); persistProfile(next)
+        if activePC?.id == pc.id { activePC?.favorite = next.favorite }
+    }
+    func duplicatePC(_ pc: PCProfile) {
+        var next = pc; next.id = UUID(); next.name += " copy"; next.lastConnected = nil; next.rememberPassword = false
+        editor = next
+    }
+    func setDisplay(resolution: DesktopResolution? = nil, mode: DesktopViewMode? = nil) {
+        guard var pc = activePC else { return }
+        if let resolution { pc.resolution = resolution }
+        if let mode { pc.viewMode = mode }
+        activePC = pc; persistProfile(pc); surface?.displaySettingsChanged()
+        if resolution != nil && !dynamicResize { sessionNotice = "This host has not enabled live resizing. Reconnect to apply the resolution." }
+    }
+    func sendText(_ text: String) {
+        guard remoteInput, !capture, usesTextInput, surfaceOwnsFocus, phase == .connected else { return }
+        if transport?.text(text) != true { sessionNotice = "Text could not be sent. Try a shorter selection or the clipboard Paste action." }
+    }
+    func pasteMacText() {
+        guard unlocked, phase == .connected, activePC?.allowMacPaste != false,
+              let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        guard text.utf16.count <= 8 * 1024 * 1024 - 1 else { sessionNotice = "Clipboard text is too large (maximum 16 MB)."; return }
+        pendingPaste = text; sessionNotice = nil
+        sessionControlsOpen = false; ownership.select(.windows); inputMode = .windows
+        window?.makeFirstResponder(surface)
+    }
+    func cancelReconnect() {
+        reconnectTask?.cancel(); reconnectTask = nil; reconnectMessage = nil
+        if phase == .reconnecting { credentialGeneration = UUID(); phase = .failed; endVPN() }
+    }
+    private func scheduleReconnect(code: UInt32) {
+        guard unlocked, !intentionalDisconnect, sessionEstablished,
+              let pc = activePC, pc.reconnectAutomatically, pc.rememberPassword,
+              let delay = ConnectionFailure.retryDelay(code: code, attempt: reconnectAttempt) else { return }
+        reconnectAttempt += 1; phase = .reconnecting
+        reconnectMessage = "Retry \(reconnectAttempt) of 5 in \(Int(delay)) seconds. Check your VPN or network."
+        let generation = sessionGeneration
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard let self, !Task.isCancelled, self.unlocked, self.sessionGeneration == generation,
+                  self.phase == .reconnecting else { return }
+            self.connect(pc, retry: true)
+        }
+    }
     func deletePC(_ pc: PCProfile) async {
         guard unlocked else { return }
         if activePC?.id == pc.id && sessionRunning { error = "Disconnect this PC before deleting it."; return }
@@ -223,21 +362,29 @@ final class AppModel: ObservableObject {
             if selection == pc.id { selection = updated.first?.id }
         } catch { self.error = error.localizedDescription }
     }
-    func connect(_ pc: PCProfile, askCredentials: Bool = false) {
-        guard unlocked, !sessionRunning else { return }
+    func connect(_ pc: PCProfile, askCredentials: Bool = false, retry: Bool = false) {
+        guard unlocked, (!sessionRunning || (retry && phase == .reconnecting)) else { return }
+        if !retry { cancelReconnect(); reconnectAttempt = 0; sessionEstablished = false }
+        intentionalDisconnect = false
         if let problem = pc.validationError { error = problem; return }
         release(reason: "Preparing connection")
-        connectionError = nil
+        connectionError = nil; reconnectMessage = nil; error = nil
         let request = UUID(); credentialGeneration = request
         if askCredentials || pc.username.isEmpty { showMainWindow?(); credentialPrompt = pc; return }
         Task {
             do {
                 let password = pc.rememberPassword ? try await vault.password(pc.id) : nil
-                guard unlocked, credentialGeneration == request, !sessionRunning else { return }
+                guard unlocked, credentialGeneration == request,
+                      !sessionRunning || (retry && phase == .reconnecting) else { return }
+                if retry { phase = .failed }
                 if let password {
-                    beginConnection(pc, password: password)
+                    beginConnection(pc, password: password, automatically: retry)
                 } else { if unlocked { showMainWindow?(); credentialPrompt = pc } }
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                guard credentialGeneration == request else { return }
+                if retry { phase = .failed }
+                self.error = error.localizedDescription
+            }
         }
     }
     func submitCredentials(_ pc: PCProfile, password: String) async -> Bool {
@@ -247,17 +394,33 @@ final class AppModel: ObservableObject {
         beginConnection(pc, password: password)
         return true
     }
-    private func beginConnection(_ pc: PCProfile, password: String) {
+    private func beginConnection(_ pc: PCProfile, password: String, automatically: Bool = false) {
         guard unlocked, !sessionRunning else { return }
         transport?.cancel(); transport = nil
         surface?.clearDesktop()
+        pendingPaste = nil; sessionNotice = nil
         sessionGeneration = UUID(); activePC = pc; selection = pc.id; phase = .connecting
-        dynamicResize = false; activeResolution = "Negotiating display…"
+        dynamicResize = false; performanceDetail = "Waiting for display updates"; activeResolution = "Negotiating display…"
         ownership.select(.windows); inputMode = .windows; captureIssue = nil
         defaults.set(pc.id.uuidString, forKey: "lastPC")
-        pendingStart = (pc, password)
-        showSession = true
-        surface?.reportGeometry()
+        let generation = sessionGeneration
+        vpnStatus = pc.useVPN ? "Waiting for VPN connection" : nil
+        if !automatically || !showSession { showSession = true }
+        vpnTask?.cancel()
+        vpnTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await sessionVPN.waitUntilConnected(id: pc.useVPN ? pc.vpnServiceID : nil)
+                try Task.checkCancellation()
+                guard unlocked, generation == sessionGeneration, phase == .connecting else { return }
+                vpnStatus = nil; pendingStart = (pc, password)
+                surface?.reportGeometry()
+            } catch {
+                guard !Task.isCancelled, generation == sessionGeneration else { return }
+                vpnStatus = nil; phase = .failed; connectionError = error.localizedDescription
+                self.error = error.localizedDescription
+            }
+        }
     }
     func geometry(_ layout: DisplayLayout) {
         guard unlocked, showSession else { return }
@@ -271,29 +434,41 @@ final class AppModel: ObservableObject {
                 }
             }
             transport = session
-            session.setModifierMapping(modifierMapping)
+            session.setModifierMapping(effectiveModifierMapping)
+            session.setClipboardSharing(effectiveClipboardSharing, generation: clipboardGeneration)
             tap.setInputSink({ [weak session] keys in session?.keys(keys) ?? false }, release: { [weak session] in session?.input(enabled: false) })
             let pins = defaults.dictionary(forKey: "rdpCertificatePins") as? [String: String] ?? [:]
             session.start(profile: pending.0, password: pending.1, layout: layout, fingerprint: pins[pending.0.endpoint] ?? "")
+            surface?.wakePresentation()
         } else if phase == .connected { transport?.resize(layout) }
     }
-    private func handle(_ event: TransportEvent) {
+    func handle(_ event: TransportEvent) {
         switch event {
+        case .frameAvailable: surface?.wakePresentation()
         case .state(let value, let code):
             phase = value
             if value == .connected {
+                sessionEstablished = true; reconnectAttempt = 0; reconnectMessage = nil
+                if var pc = activePC { pc.lastConnected = Date(); activePC = pc; persistProfile(pc) }
+                surface?.wakePresentation()
                 guard unlocked else { release(reason: "App locked · session stays connected"); return }
                 status = "Connected · Windows control"
-                window?.makeFirstResponder(surface)
+                if window?.isKeyWindow == true { window?.makeFirstResponder(surface) }
                 resumeWindowsInput()
-                if activePC?.openFullScreen == true, window?.styleMask.contains(.fullScreen) != true { window?.toggleFullScreen(nil) }
+                if window?.isKeyWindow == true, activePC?.openFullScreen == true, window?.styleMask.contains(.fullScreen) != true { window?.toggleFullScreen(nil) }
             } else if value == .failed || value == .disconnected {
                 release(reason: value.rawValue)
                 certificateRequest = nil
                 tap.setInputSink(nil, release: nil)
                 transport = nil; surface?.clearDesktop(); presentedFPS = 0
                 if value == .failed { connectionError = ConnectionFailure.message(code) }
-                closeSessionPresentation()
+                if intentionalDisconnect { closeSessionPresentation() }
+                else {
+                    if value == .disconnected { connectionError = "The remote PC ended the connection." }
+                    if let connectionError { error = connectionError }
+                    scheduleReconnect(code: code)
+                }
+                if phase != .reconnecting { endVPN() }
                 updater.sessionEnded()
             }
         case .certificate(let request):
@@ -301,9 +476,19 @@ final class AppModel: ObservableObject {
             suspendInput(reason: "Verify Windows PC certificate"); certificateRequest = request
         case .cursor(let cursor): surface?.updateCursor(cursor)
         case .displayControl(let supported): dynamicResize = supported
+        case .clipboard(let text, let generation): receiveClipboard(text, generation: generation)
         }
     }
+    func receiveClipboard(_ text: String, generation: UInt64) {
+        guard effectiveClipboardSharing, generation == clipboardGeneration, unlocked, phase == .connected else { return }
+        writeClipboard(text)
+    }
     func disconnect() {
+        intentionalDisconnect = true; cancelReconnect(); pendingPaste = nil
+        endVPN()
+        credentialGeneration = UUID()
+        clipboardGeneration += 1
+        transport?.setClipboardSharing(false, generation: clipboardGeneration)
         release(reason: "Disconnecting…")
         pendingStart = nil
         certificateRequest = nil
@@ -312,6 +497,10 @@ final class AppModel: ObservableObject {
             phase = .disconnected
             updater.sessionEnded()
         } else { transport?.cancel() }
+    }
+    private func endVPN() {
+        vpnTask?.cancel(); vpnTask = nil; vpnStatus = nil
+        sessionVPN.cancelWait()
     }
     private func closeSessionPresentation() {
         guard showSession || window != nil else { return }
@@ -345,7 +534,7 @@ final class AppModel: ObservableObject {
         guard unlocked, phase == .connected else { return }
         ownership.select(.windows); inputMode = .windows; captureIssue = nil
         refreshKeyboardPermission()
-        if captureSystemShortcuts && (!accessibilityGranted || !captureValidated) {
+        if wantsExclusiveCapture && (!accessibilityGranted || !captureValidated) {
             openKeyboardSetup()
             return
         }
@@ -359,7 +548,7 @@ final class AppModel: ObservableObject {
               !keyboardToggle.pending, surface?.hasTouches != true,
               NSEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
               !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(shortcut.keyCode)) else { return }
-        let shouldCapture = captureSystemShortcuts && releaseVerified && accessibilityGranted
+        let shouldCapture = wantsExclusiveCapture && releaseVerified && accessibilityGranted
             && (captureValidated || captureTestRequested)
         if shouldCapture {
             if !capture { beginCapture() }
@@ -384,7 +573,7 @@ final class AppModel: ObservableObject {
         transport?.pointer(flags: flags, x: x, y: y)
     }
     func rehearse() {
-        guard unlocked, !pinChange else { return }
+        guard unlocked, !pinChange && !pinReset else { return }
         release(reason: "Release rehearsal started")
         settings = false
         showSession = true
@@ -398,7 +587,7 @@ final class AppModel: ObservableObject {
         release(reason: "Mac keyboard · session stays open")
     }
     func beginCapture() {
-        guard canCapture, surfaceOwnsFocus, captureValidated || captureTestRequested else { status = "Verify the toggle shortcut and Release button in Settings first."; return }
+        guard !usesTextInput, canCapture, surfaceOwnsFocus, captureValidated || captureTestRequested else { status = "Verify the toggle shortcut and Release button in Settings first."; return }
         keyboardToggle.cancel()
         guard NSEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { status = "Lift modifier keys first."; return }
         guard keyboardAccess.isTrusted() else {
@@ -414,10 +603,7 @@ final class AppModel: ObservableObject {
         }
         guard tap.isReady else { preparingCapture = true; began = Date(); return }
         if remoteInput { transport?.input(enabled: false); remoteInput = false }
-        presentation = NSApp.presentationOptions
-        var options = NSApp.presentationOptions
-        options.remove([.hideDock, .hideMenuBar]); options.formUnion([.autoHideDock, .autoHideMenuBar, .disableProcessSwitching])
-        NSApp.presentationOptions = options
+        sessionPresentation.beginCapture()
         transport?.input(enabled: true, capsLock: NSEvent.modifierFlags.contains(.capsLock))
         if let failure = tap.start(eligible: surfaceOwnsFocus, releaseVerified: releaseVerified, modifiersHeld: false, shortcut: shortcut, validated: captureValidated) {
             restorePresentation(); transport?.input(enabled: false); ownership.fail(); captureIssue = failure; status = failure; return
@@ -426,11 +612,13 @@ final class AppModel: ObservableObject {
         status = captureValidated ? "Windows shortcuts captured · \(shortcut.displayName) returns to Mac input" : "Press \(shortcut.displayName) within 10 seconds to verify captured release and enable continuous capture."
     }
     func release(reason: String) {
+        pendingPaste = nil
         pendingDesktopAction = nil
         ownership.select(.mac); inputMode = .mac
         finishRelease(reason: reason)
     }
     func suspendInput(reason: String) {
+        pendingPaste = nil
         let waitingForTest = captureTestRequested && !capture && !preparingCapture
         finishRelease(reason: reason)
         captureTestRequested = waitingForTest
@@ -442,13 +630,13 @@ final class AppModel: ObservableObject {
         gestureRecognizer.reset(); gestureTouchCount = 0
     }
     private func restorePresentation() {
-        if let presentation { NSApp.presentationOptions = presentation; self.presentation = nil }
+        sessionPresentation.restore()
     }
     var surfaceOwnsFocus: Bool {
         guard let surface, let window else { return false }
         return NSApp.isActive && window.isKeyWindow && window.firstResponder === surface
             && window.isOnActiveSpace && window.occlusionState.contains(.visible)
-            && !menuOpen && !sessionControlsOpen && !keyboardSetup && !restarting && !fullScreenTransition && window.attachedSheet == nil && NSApp.modalWindow == nil && unlocked && !settings && !pinChange
+            && !menuOpen && !sessionControlsOpen && !keyboardSetup && !restarting && !fullScreenTransition && window.attachedSheet == nil && NSApp.modalWindow == nil && unlocked && !settings && !pinChange && !pinReset
             && !updates && editor == nil && credentialPrompt == nil && certificateRequest == nil && !IsSecureEventInputEnabled()
     }
     func touches(_ points: [TouchPoint], ended: Bool, cancelled: Bool = false) {
@@ -478,7 +666,7 @@ final class AppModel: ObservableObject {
         }
     }
     func switchWindowsDesktop(_ action: WindowsAction) {
-        guard action == .desktopLeft || action == .desktopRight, unlocked, phase == .connected else { return }
+        guard unlocked, phase == .connected else { return }
         pendingDesktopAction = action
         captureIssue = nil
         sessionControlsOpen = false
@@ -500,22 +688,22 @@ final class AppModel: ObservableObject {
         if phase != .connected { return .disconnected }
         if let captureIssue { return .failed(captureIssue) }
         if inputMode == .mac { return .mac }
-        if captureSystemShortcuts && !accessibilityGranted { return .permissionRequired }
+        if wantsExclusiveCapture && !accessibilityGranted { return .permissionRequired }
         if capture && tap.isCapturing && tap.isEnabled {
             return captureValidated ? .active : .testing
         }
         if preparingCapture || captureTestRequested { return .starting }
-        if captureSystemShortcuts && !captureValidated { return .setupRequired }
+        if wantsExclusiveCapture && !captureValidated { return .setupRequired }
         if sessionControlsOpen || keyboardSetup || settings || menuOpen || !remoteInput { return .paused }
         return .typingOnly
     }
     var keyboardControlDetail: String {
         switch keyboardControlState {
-        case .active: return modifierMapping.summary + " · \(shortcut.displayName) returns to Mac."
+        case .active: return effectiveModifierMapping.summary + " · \(shortcut.displayName) returns to Mac."
         case .testing: return "Press \(shortcut.displayName) within \(remaining) seconds to finish setup."
         case .permissionRequired: return "macOS still handles system shortcuts. Enable MacRDP in System Settings → Privacy & Security → Accessibility."
         case .setupRequired: return "Windows typing is available. Complete Keyboard setup to send system shortcuts to Windows."
-        case .typingOnly: return "System shortcut capture is off. macOS still handles Command+Tab and other Mac shortcuts."
+        case .typingOnly: if usesTextInput { return "Mac text input and IME are active. System shortcuts stay on your Mac." }; return "System shortcut capture is off. macOS still handles Command+Tab and other Mac shortcuts."
         case .paused: return "Local controls or another window have focus. Return to the Windows desktop to resume."
         case .mac: return captureValidated ? "Mac shortcuts are active. Select Windows or press \(shortcut.displayName) to switch." : "Complete Keyboard setup to enable Windows system shortcuts."
         case .starting: return "Return to the remote desktop and lift all shortcut keys."
@@ -594,16 +782,36 @@ final class AppModel: ObservableObject {
     }
     func openSettings() { suspendInput(reason: "Local settings"); showMainWindow?(); error = nil; settings = true }
     func openUpdates() { settingsSection = .updates; openSettings() }
-    func saveSettings(shortcut: KeyboardShortcut, three: GestureMapping, four: GestureMapping, exclusive: Bool, mapping: ModifierMapping? = nil, dismiss: Bool = true) {
+    func saveSettings(shortcut: KeyboardShortcut, three: GestureMapping, four: GestureMapping, exclusive: Bool, mapping: ModifierMapping? = nil, controlsPosition: SessionControlsPosition? = nil, reverseHorizontalScrolling: Bool? = nil, clipboardSharing: Bool? = nil, keepAwake: Bool? = nil, dismiss: Bool = true) {
         if let problem = shortcut.validationError { error = problem; return }
         updateShortcut(shortcut)
         if let mapping, mapping != modifierMapping {
             suspendInput(reason: "Keyboard mapping changed")
             modifierMapping = mapping
-            transport?.setModifierMapping(mapping)
+            transport?.setModifierMapping(effectiveModifierMapping)
             defaults.set(try? JSONEncoder().encode(mapping), forKey: "modifierMapping")
         }
         threeFinger = three; fourFinger = four; captureSystemShortcuts = exclusive
+        if let keepAwake {
+            self.keepAwake = keepAwake
+            defaults.set(keepAwake, forKey: "keepAwake")
+            updateSleepActivity()
+        }
+        if let clipboardSharing, clipboardSharing != self.clipboardSharing {
+            self.clipboardSharing = clipboardSharing
+            clipboardGeneration += 1
+            transport?.setClipboardSharing(effectiveClipboardSharing, generation: clipboardGeneration)
+            defaults.set(clipboardSharing, forKey: "clipboardSharing")
+        }
+        if let controlsPosition {
+            sessionControlsPosition = controlsPosition
+            defaults.set(controlsPosition.rawValue, forKey: "sessionControlsPosition")
+        }
+        if let reverseHorizontalScrolling, reverseHorizontalScrolling != self.reverseHorizontalScrolling {
+            surface?.resetScrolling()
+            self.reverseHorizontalScrolling = reverseHorizontalScrolling
+            defaults.set(reverseHorizontalScrolling, forKey: "reverseHorizontalScrolling")
+        }
         defaults.set(three.rawValue, forKey: "threeFingerAction"); defaults.set(four.rawValue, forKey: "fourFingerAction")
         defaults.set(exclusive, forKey: "captureSystemShortcuts"); if dismiss { settings = false }; error = nil
     }
@@ -692,7 +900,8 @@ final class AppModel: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if Date().timeIntervalSince(self.permissionCheckTime) >= 1 { self.refreshKeyboardPermission() }
+                let permissionInterval: TimeInterval = (self.remoteInput && self.wantsExclusiveCapture) || self.keyboardSetup || self.settings ? 1 : 10
+                if Date().timeIntervalSince(self.permissionCheckTime) >= permissionInterval { self.refreshKeyboardPermission(); self.surface?.refreshIdleMetrics() }
                 if self.remoteInput && !self.surfaceOwnsFocus { self.suspendInput(reason: "Mac input · session stays open") }
                 self.resumeWindowsInput()
                 if let action = self.pendingDesktopAction, self.remoteInput, self.surfaceOwnsFocus,
@@ -700,6 +909,12 @@ final class AppModel: ObservableObject {
                     self.pendingDesktopAction = nil
                     self.sendDesktopAction(action)
                 }
+                if let text = self.pendingPaste, self.remoteInput, self.surfaceOwnsFocus,
+                   NSEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+                    self.pendingPaste = nil
+                    if self.transport?.paste(text) != true { self.sessionNotice = "Clipboard is not ready. Wait a moment and try Paste again." }
+                }
+                if !self.sessionRunning && !self.keyboardSetup && !self.rehearsing { self.timer?.fireDate = Date().addingTimeInterval(1) }
                 if self.capture {
                     self.tap.heartbeat(eligible: self.surfaceOwnsFocus && self.accessibilityGranted)
                 }
@@ -717,19 +932,36 @@ final class AppModel: ObservableObject {
     }
 
 
+    private func updateSleepActivity() {
+        if keepAwake && phase == .connected && !didShutdown {
+            guard sleepActivity == nil else { return }
+            sleepActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled, .idleDisplaySleepDisabled],
+                reason: "MacRDP connected session")
+        } else if let sleepActivity {
+            ProcessInfo.processInfo.endActivity(sleepActivity)
+            self.sleepActivity = nil
+        }
+    }
+
     func dismissLocalDialogs() {
-        settings = false; keyboardSetup = false; updates = false; pinChange = false
+        settings = false; keyboardSetup = false; updates = false; pinChange = false; pinReset = false
         editor = nil; credentialPrompt = nil; certificateRequest = nil
         suspendInput(reason: "Preparing to close MacRDP")
     }
     func prepareForTermination() {
+        cancelReconnect()
         dismissLocalDialogs()
         shutdown()
     }
     private var didShutdown = false
     func shutdown() {
+        endVPN()
+        cancelAuthentication()
+        cancelReconnect()
         guard !didShutdown else { return }
         didShutdown = true
+        updateSleepActivity()
         release(reason: "Application closed"); pendingStart = nil; transport?.cancel(); tap.shutdown()
         timer?.invalidate(); timer = nil
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }

@@ -10,7 +10,12 @@ if [[ ! "$build_number" =~ ^[0-9]+$ ]]; then echo 'Build number must be numeric.
 public_key="$(Vendor/Sparkle/bin/generate_keys --account uz.macrdp.updates -p)"
 expected_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' Resources/Info.plist)"
 if [[ "$public_key" != "$expected_key" ]]; then echo 'The update signing key does not match this app. Restore the original key before publishing.' >&2; exit 1; fi
-MACRDP_CONFIGURATION=Release ./scripts/build-app.sh "MARKETING_VERSION=$version" "CURRENT_PROJECT_VERSION=$build_number" 'OTHER_SWIFT_FLAGS=$(inherited) -disable-sandbox'
+bash scripts/build-hardware-dependencies.sh
+export MACRDP_BUNDLE_PREFIX="$project_dir/build/hardware-decoding/install"
+MACRDP_CONFIGURATION=Release ./scripts/build-app.sh "MARKETING_VERSION=$version" "CURRENT_PROJECT_VERSION=$build_number" 'OTHER_SWIFT_FLAGS=$(inherited) -disable-sandbox' \
+    "LIBRARY_SEARCH_PATHS=$MACRDP_BUNDLE_PREFIX/lib /opt/homebrew/lib" \
+    "HEADER_SEARCH_PATHS=$MACRDP_BUNDLE_PREFIX/include/freerdp3 $MACRDP_BUNDLE_PREFIX/include/winpr3 /opt/homebrew/include" \
+    'GCC_PREPROCESSOR_DEFINITIONS=$(inherited) MACRDP_HARDWARE_TEST=1'
 staging="${MACRDP_RELEASE_DIR:-$project_dir/build/releases/$version}"
 if [[ -e "$staging" ]]; then echo "Release folder already exists: $staging. Use a new version or inspect the existing package." >&2; exit 1; fi
 mkdir -p "$staging"

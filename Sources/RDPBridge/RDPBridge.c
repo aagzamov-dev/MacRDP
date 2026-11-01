@@ -3,6 +3,8 @@
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/cliprdr.h>
+#include <freerdp/client/rdpgfx.h>
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/graphics.h>
@@ -12,6 +14,7 @@
 #include <freerdp/error.h>
 #include <winpr/synch.h>
 #include <winpr/wlog.h>
+#include <winpr/clipboard.h>
 #include <Security/Security.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -20,7 +23,7 @@
 #include <time.h>
 
 typedef struct { rdpClientContext common; MRSession *owner; } MRContext;
-typedef struct { uint64_t epoch; uint32_t key; uint16_t flags, x, y; bool down, repeat, pointer; } MRInput;
+typedef struct { uint64_t epoch; uint32_t key; uint16_t flags, x, y; bool down, repeat, pointer, unicode; } MRInput;
 struct MRSession {
     rdpContext *context;
     MRCallbacks callbacks;
@@ -28,8 +31,11 @@ struct MRSession {
     HANDLE wake;
     pthread_mutex_t input_lock, frame_lock, certificate_lock, display_lock;
     pthread_cond_t certificate_condition;
-    atomic_bool stop, connected;
+    atomic_bool stop, connected, clipboard_available;
     atomic_uint error;
+    atomic_uint_fast64_t clipboard_policy;
+    uint64_t clipboard_revision, clipboard_request_revision, clipboard_request_policy, clipboard_offer_policy;
+    bool clipboard_pending, clipboard_text_available;
     bool input_enabled, cleanup, certificate_waiting, certificate_accepted;
     MRInput input[1024];
     size_t head, count;
@@ -44,7 +50,19 @@ struct MRSession {
     DispClientContext *display;
     uint8_t *frame;
     size_t frame_capacity, frame_size;
-    uint64_t frame_copied_bytes;
+    atomic_uint_fast64_t frame_copied_bytes, snapshot_bytes, frame_sequence;
+    uint64_t frame_generation;
+    uint32_t dirty_left, dirty_top, dirty_right, dirty_bottom;
+    bool frame_dirty;
+    atomic_uint codec;
+    atomic_uint_fast64_t surface_commands, surface_nanoseconds;
+    pcRdpgfxSurfaceCommand surface_command;
+    CliprdrClientContext *clipboard;
+    uint8_t *outbound_text;
+    size_t outbound_length;
+    uint64_t paste_epoch;
+    bool offer_pending, paste_pending;
+    unsigned format_announcement;
     uint32_t width, height, stride;
     char *fingerprint;
 };
@@ -148,6 +166,9 @@ static BOOL end_paint(rdpContext *context) {
         s->frame = buffer; s->frame_capacity = size;
     }
     if (s->width != (uint32_t)gdi->width || s->height != (uint32_t)gdi->height || s->stride != gdi->stride) {
+        s->frame_generation++;
+        s->dirty_left = 0; s->dirty_top = 0; s->dirty_right = gdi->width; s->dirty_bottom = gdi->height;
+        s->frame_dirty = true;
         memcpy(s->frame, gdi->primary_buffer, size);
         s->frame_copied_bytes += size;
     } else {
@@ -159,6 +180,16 @@ static BOOL end_paint(rdpContext *context) {
         if (right > gdi->width) right = gdi->width;
         if (bottom > gdi->height) bottom = gdi->height;
         if (right > left && bottom > top) {
+            if (!s->frame_dirty) {
+                s->dirty_left = (uint32_t)left; s->dirty_top = (uint32_t)top;
+                s->dirty_right = (uint32_t)right; s->dirty_bottom = (uint32_t)bottom;
+            } else {
+                if (left < s->dirty_left) s->dirty_left = (uint32_t)left;
+                if (top < s->dirty_top) s->dirty_top = (uint32_t)top;
+                if (right > s->dirty_right) s->dirty_right = (uint32_t)right;
+                if (bottom > s->dirty_bottom) s->dirty_bottom = (uint32_t)bottom;
+            }
+            s->frame_dirty = true;
             size_t row = (size_t)(right - left) * 4;
             for (int64_t y = top; y < bottom; y++) {
                 size_t offset = (size_t)y * gdi->stride + (size_t)left * 4;
@@ -167,6 +198,7 @@ static BOOL end_paint(rdpContext *context) {
             s->frame_copied_bytes += row * (size_t)(bottom - top);
         }
     }
+    s->frame_sequence++;
     s->frame_size = size; s->width = gdi->width; s->height = gdi->height; s->stride = gdi->stride;
     pthread_mutex_unlock(&s->frame_lock);
     if (s->callbacks.frame) s->callbacks.frame(s->user);
@@ -213,6 +245,119 @@ static UINT display_caps(DispClientContext *context, UINT32 monitors, UINT32 a, 
     if (s->callbacks.display) s->callbacks.display(s->user, true);
     return CHANNEL_RC_OK;
 }
+static UINT clipboard_ready(CliprdrClientContext *context, const CLIPRDR_MONITOR_READY *ready) {
+    (void)ready;
+    atomic_store(&((MRSession *)context->custom)->clipboard_available, true);
+    CLIPRDR_GENERAL_CAPABILITY_SET general = {
+        .capabilitySetType = CB_CAPSTYPE_GENERAL, .capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN,
+        .version = CB_CAPS_VERSION_2, .generalFlags = CB_USE_LONG_FORMAT_NAMES
+    };
+    CLIPRDR_CAPABILITIES capabilities = {
+        .common.msgType = CB_CLIP_CAPS, .cCapabilitiesSets = 1,
+        .capabilitySets = (CLIPRDR_CAPABILITY_SET *)&general
+    };
+    UINT result = context->ClientCapabilities(context, &capabilities);
+    if (result != CHANNEL_RC_OK) return result;
+    MRSession *s = context->custom;
+    pthread_mutex_lock(&s->input_lock); s->format_announcement = 1; pthread_mutex_unlock(&s->input_lock);
+    CLIPRDR_FORMAT_LIST formats = {.common.msgType = CB_FORMAT_LIST};
+    return context->ClientFormatList(context, &formats);
+}
+static UINT clipboard_request_text(CliprdrClientContext *context) {
+    MRSession *s = context->custom;
+    uint64_t policy = atomic_load(&s->clipboard_policy);
+    if (s->clipboard_pending || !s->clipboard_text_available || !(policy & 1) || atomic_load(&s->stop))
+        return CHANNEL_RC_OK;
+    s->clipboard_text_available = false;
+    if (policy != s->clipboard_offer_policy) return CHANNEL_RC_OK;
+    s->clipboard_pending = true;
+    s->clipboard_request_revision = s->clipboard_revision;
+    s->clipboard_request_policy = policy;
+    CLIPRDR_FORMAT_DATA_REQUEST request = {
+        .common.msgType = CB_FORMAT_DATA_REQUEST, .requestedFormatId = CF_UNICODETEXT
+    };
+    UINT result = context->ClientFormatDataRequest(context, &request);
+    if (result != CHANNEL_RC_OK) s->clipboard_pending = false;
+    return result;
+}
+static UINT clipboard_formats(CliprdrClientContext *context, const CLIPRDR_FORMAT_LIST *formats) {
+    MRSession *s = context->custom;
+    s->clipboard_revision++;
+    s->clipboard_text_available = false;
+    s->clipboard_offer_policy = atomic_load(&s->clipboard_policy);
+    if ((s->clipboard_offer_policy & 1) && !atomic_load(&s->stop)) {
+        for (UINT32 i = 0; i < formats->numFormats; i++) {
+            if (formats->formats[i].formatId == CF_UNICODETEXT) { s->clipboard_text_available = true; break; }
+        }
+    }
+    CLIPRDR_FORMAT_LIST_RESPONSE response = {
+        .common = {.msgType = CB_FORMAT_LIST_RESPONSE, .msgFlags = CB_RESPONSE_OK}
+    };
+    UINT result = context->ClientFormatListResponse(context, &response);
+    return result == CHANNEL_RC_OK ? clipboard_request_text(context) : result;
+}
+static UINT clipboard_data(CliprdrClientContext *context, const CLIPRDR_FORMAT_DATA_RESPONSE *response) {
+    MRSession *s = context->custom;
+    if (!s->clipboard_pending) return CHANNEL_RC_OK;
+    s->clipboard_pending = false;
+    uint64_t policy = atomic_load(&s->clipboard_policy);
+    size_t length = response->common.dataLen;
+    if (!atomic_load(&s->stop) && (policy & 1) && policy == s->clipboard_request_policy
+        && s->clipboard_request_revision == s->clipboard_revision
+        && response->common.msgFlags == CB_RESPONSE_OK && response->requestedFormatData
+        && length >= 2 && length <= 16u * 1024u * 1024u && length % 2 == 0 && s->callbacks.clipboard)
+        s->callbacks.clipboard(s->user, response->requestedFormatData, length, policy >> 1);
+    return clipboard_request_text(context);
+}
+static UINT clipboard_offer_response(CliprdrClientContext *context, const CLIPRDR_FORMAT_LIST_RESPONSE *response) {
+    MRSession *s = context->custom;
+    pthread_mutex_lock(&s->input_lock);
+    bool paste = s->format_announcement == 2 && s->paste_pending && s->paste_epoch == s->input_epoch && s->input_enabled
+        && response->common.msgFlags == CB_RESPONSE_OK && s->count <= 1020;
+    if (s->format_announcement == 2) s->paste_pending = false;
+    s->format_announcement = 0;
+    bool waiting = s->offer_pending;
+    if (paste) {
+        const MRInput chord[] = {{.key = 0x1d, .down = true}, {.key = 0x2f, .down = true},
+                                {.key = 0x2f}, {.key = 0x1d}};
+        for (size_t i = 0; i < 4; i++) {
+            MRInput event = chord[i]; event.epoch = s->input_epoch;
+            s->input[(s->head + s->count++) % 1024] = event;
+        }
+    }
+    pthread_mutex_unlock(&s->input_lock);
+    if (paste || waiting) SetEvent(s->wake);
+    return CHANNEL_RC_OK;
+}
+static UINT clipboard_local_data(CliprdrClientContext *context, const CLIPRDR_FORMAT_DATA_REQUEST *request) {
+    MRSession *s = context->custom;
+    pthread_mutex_lock(&s->input_lock);
+    size_t length = request->requestedFormatId == CF_UNICODETEXT && s->input_enabled
+        && s->paste_epoch == s->input_epoch ? s->outbound_length : 0;
+    uint8_t *copy = length ? malloc(length) : NULL;
+    if (copy) memcpy(copy, s->outbound_text, length); else length = 0;
+    pthread_mutex_unlock(&s->input_lock);
+    CLIPRDR_FORMAT_DATA_RESPONSE response = {
+        .common = {.msgType = CB_FORMAT_DATA_RESPONSE, .msgFlags = length ? CB_RESPONSE_OK : CB_RESPONSE_FAIL,
+                   .dataLen = (UINT32)length}, .requestedFormatData = copy
+    };
+    UINT result = context->ClientFormatDataResponse(context, &response);
+    if (copy) { memset(copy, 0, length); free(copy); }
+    return result;
+}
+static UINT measured_surface(RdpgfxClientContext *context, const RDPGFX_SURFACE_COMMAND *command) {
+    rdpGdi *gdi = context->custom;
+    MRSession *s = owner(gdi->context);
+    struct timespec before, after;
+    clock_gettime(CLOCK_MONOTONIC, &before);
+    UINT result = s->surface_command(context, command);
+    clock_gettime(CLOCK_MONOTONIC, &after);
+    uint64_t elapsed = (uint64_t)(after.tv_sec - before.tv_sec) * 1000000000ull + after.tv_nsec - before.tv_nsec;
+    atomic_store(&s->codec, command->codecId);
+    atomic_fetch_add(&s->surface_commands, 1);
+    atomic_fetch_add(&s->surface_nanoseconds, elapsed);
+    return result;
+}
 static void channel_connected(void *context, const ChannelConnectedEventArgs *event) {
     MRSession *s = owner(context);
     if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0) {
@@ -220,7 +365,23 @@ static void channel_connected(void *context, const ChannelConnectedEventArgs *ev
         s->display = event->pInterface;
         s->display->custom = s; s->display->DisplayControlCaps = display_caps;
         pthread_mutex_unlock(&s->display_lock);
-    } else freerdp_client_OnChannelConnectedEventHandler(context, event);
+    } else if (strcmp(event->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        CliprdrClientContext *clipboard = event->pInterface;
+        s->clipboard = clipboard;
+        clipboard->custom = s;
+        clipboard->MonitorReady = clipboard_ready;
+        clipboard->ServerFormatList = clipboard_formats;
+        clipboard->ServerFormatDataResponse = clipboard_data;
+        clipboard->ServerFormatListResponse = clipboard_offer_response;
+        clipboard->ServerFormatDataRequest = clipboard_local_data;
+    } else {
+        freerdp_client_OnChannelConnectedEventHandler(context, event);
+        if (strcmp(event->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
+            RdpgfxClientContext *gfx = event->pInterface;
+            s->surface_command = gfx->SurfaceCommand;
+            if (s->surface_command) gfx->SurfaceCommand = measured_surface;
+        }
+    }
 }
 static void channel_disconnected(void *context, const ChannelDisconnectedEventArgs *event) {
     MRSession *s = owner(context);
@@ -229,7 +390,10 @@ static void channel_disconnected(void *context, const ChannelDisconnectedEventAr
         s->display = NULL; s->display_ready = false;
         pthread_mutex_unlock(&s->display_lock);
         if (s->callbacks.display) s->callbacks.display(s->user, false);
-    } else freerdp_client_OnChannelDisconnectedEventHandler(context, event);
+    } else if (strcmp(event->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        s->clipboard = NULL; atomic_store(&s->clipboard_available, false);
+    } else
+        freerdp_client_OnChannelDisconnectedEventHandler(context, event);
 }
 static void connection_state(void *context, const StateChangedEventArgs *event) {
     if (event->newState == CONNECTION_STATE_NLA || event->newState == CONNECTION_STATE_SECURE_SETTINGS_EXCHANGE)
@@ -267,6 +431,10 @@ static BOOL client_new(freerdp *instance, rdpContext *context) {
 }
 
 MRSession *mr_session_new(const MRConfiguration *config, MRCallbacks callbacks, void *user) {
+#ifdef MACRDP_HARDWARE_TEST
+    extern void freerdp_macrdp_decoder_reset(void);
+    freerdp_macrdp_decoder_reset();
+#endif
     if (!config || !config->host || !config->port || config->width < 200 || config->height < 200
         || config->width > 8192 || config->height > 8192 || config->width % 2
         || config->desktop_scale < 100 || config->desktop_scale > 500) return NULL;
@@ -276,7 +444,11 @@ MRSession *mr_session_new(const MRConfiguration *config, MRCallbacks callbacks, 
     pthread_mutex_init(&s->input_lock, NULL); pthread_mutex_init(&s->frame_lock, NULL);
     pthread_mutex_init(&s->display_lock, NULL);
     pthread_mutex_init(&s->certificate_lock, NULL); pthread_cond_init(&s->certificate_condition, NULL);
+    atomic_init(&s->clipboard_available, false);
     atomic_init(&s->stop, false); atomic_init(&s->connected, false); atomic_init(&s->error, 0);
+    atomic_init(&s->clipboard_policy, 0);
+    atomic_init(&s->frame_copied_bytes, 0); atomic_init(&s->snapshot_bytes, 0); atomic_init(&s->frame_sequence, 0);
+    atomic_init(&s->codec, 0); atomic_init(&s->surface_commands, 0); atomic_init(&s->surface_nanoseconds, 0);
     s->callbacks = callbacks; s->user = user;
     s->wake = CreateEvent(NULL, true, false, NULL);
     RDP_CLIENT_ENTRY_POINTS entry = {0}; entry.Size = sizeof(entry); entry.Version = RDP_CLIENT_INTERFACE_VERSION;
@@ -302,8 +474,16 @@ MRSession *mr_session_new(const MRConfiguration *config, MRCallbacks callbacks, 
     SET_BOOL(NlaSecurity, true); SET_BOOL(TlsSecurity, true); SET_BOOL(RdpSecurity, false);
     SET_BOOL(Authentication, true); SET_BOOL(IgnoreCertificate, false);
     SET_BOOL(ExternalCertificateManagement, true); SET_BOOL(UseCommonStdioCallbacks, false);
-    SET_BOOL(AutoReconnectionEnabled, false); SET_BOOL(RedirectClipboard, false);
-    SET_BOOL(SoftwareGdi, true); SET_BOOL(SupportGraphicsPipeline, true);
+    SET_BOOL(AutoReconnectionEnabled, false); SET_BOOL(RedirectClipboard, true);
+    SET_UINT(ClipboardFeatureMask, CLIPRDR_FLAG_REMOTE_TO_LOCAL | CLIPRDR_FLAG_LOCAL_TO_REMOTE);
+    SET_BOOL(UnicodeInput, true);
+    SET_BOOL(AudioPlayback, config->audio); SET_BOOL(AudioCapture, false);
+#ifdef MACRDP_HARDWARE_TEST
+    SET_BOOL(SoftwareGdi, false);
+#else
+    SET_BOOL(SoftwareGdi, true);
+#endif
+    SET_BOOL(SupportGraphicsPipeline, true);
     SET_BOOL(GfxH264, true); SET_BOOL(GfxAVC444, true); SET_BOOL(GfxAVC444v2, true);
     SET_BOOL(DynamicResolutionUpdate, true); SET_BOOL(SupportDisplayControl, true);
 #undef SET_BOOL
@@ -338,6 +518,15 @@ static BOOL drain_input(MRSession *s) {
     s->synchronize_pending = false;
     pthread_mutex_unlock(&s->input_lock);
     if (cleanup) clear_held(s);
+    pthread_mutex_lock(&s->input_lock);
+    bool offer = s->offer_pending && !s->format_announcement && s->input_enabled && s->paste_epoch == s->input_epoch;
+    if (offer) { s->offer_pending = false; s->format_announcement = 2; }
+    pthread_mutex_unlock(&s->input_lock);
+    if (offer && s->clipboard) {
+        CLIPRDR_FORMAT format = {.formatId = CF_UNICODETEXT};
+        CLIPRDR_FORMAT_LIST formats = {.common.msgType = CB_FORMAT_LIST, .numFormats = 1, .formats = &format};
+        if (s->clipboard->ClientFormatList(s->clipboard, &formats) != CHANNEL_RC_OK) return false;
+    }
     if (synchronize && !freerdp_input_send_synchronize_event(s->context->input, toggles)) return false;
     for (size_t i = 0; i < count; i++) {
         MRInput event = items[i];
@@ -352,6 +541,9 @@ static BOOL drain_input(MRSession *s) {
             uint16_t button = event.flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3);
             if (event.flags & PTR_FLAGS_DOWN) s->buttons |= button; else s->buttons &= ~button;
             if (!freerdp_input_send_mouse_event(s->context->input, event.flags, event.x, event.y)) return false;
+        } else if (event.unicode) {
+            if (!freerdp_input_send_unicode_keyboard_event(s->context->input, 0, (UINT16)event.key)
+                || !freerdp_input_send_unicode_keyboard_event(s->context->input, KBD_FLAGS_RELEASE, (UINT16)event.key)) return false;
         } else {
             if (event.key < 512) s->keys[event.key] = event.down;
             if (!freerdp_input_send_keyboard_event_ex(s->context->input, event.down, event.repeat, event.key)) return false;
@@ -406,6 +598,7 @@ void mr_session_free(MRSession *s) {
     if (s->context) freerdp_client_context_free(s->context);
     if (s->wake) CloseHandle(s->wake);
     free(s->frame); free(s->fingerprint);
+    if (s->outbound_text) { memset(s->outbound_text, 0, s->outbound_length); free(s->outbound_text); }
     pthread_cond_destroy(&s->certificate_condition);
     pthread_mutex_destroy(&s->certificate_lock); pthread_mutex_destroy(&s->frame_lock);
     pthread_mutex_destroy(&s->display_lock);
@@ -419,8 +612,15 @@ void mr_certificate_reply(MRSession *s, bool accept) {
 void mr_input_enable(MRSession *s, bool enabled) {
     pthread_mutex_lock(&s->input_lock);
     s->input_enabled = enabled;
-    if (!enabled) { s->input_epoch++; s->head = 0; s->count = 0; s->cleanup = true; }
+    if (!enabled) {
+        s->offer_pending = false; s->paste_pending = false;
+        if (s->outbound_text) { memset(s->outbound_text, 0, s->outbound_length); free(s->outbound_text); s->outbound_text = NULL; }
+        s->outbound_length = 0;
+        s->input_epoch++; s->head = 0; s->count = 0; s->cleanup = true; }
     pthread_mutex_unlock(&s->input_lock); SetEvent(s->wake);
+}
+void mr_clipboard_enable(MRSession *s, bool enabled, uint64_t generation) {
+    atomic_store(&s->clipboard_policy, (generation << 1) | (enabled ? 1u : 0u));
 }
 void mr_synchronize(MRSession *s, uint32_t toggles) {
     pthread_mutex_lock(&s->input_lock);
@@ -467,3 +667,60 @@ size_t mr_copy_frame(MRSession *s, uint8_t *buffer, size_t capacity, uint32_t *w
     pthread_mutex_unlock(&s->frame_lock); return size;
 }
 uint32_t mr_last_error(MRSession *s) { return atomic_load(&s->error); }
+
+bool mr_text(MRSession *s, const uint16_t *text, size_t count) {
+    if (!s || !text || !count || count > 512 || !atomic_load(&s->connected) || atomic_load(&s->stop)) return false;
+    pthread_mutex_lock(&s->input_lock);
+    if (!s->input_enabled || s->count + count > 1024) { pthread_mutex_unlock(&s->input_lock); return false; }
+    for (size_t i = 0; i < count; i++) {
+        s->input[(s->head + s->count++) % 1024] = (MRInput){.epoch = s->input_epoch, .key = text[i], .unicode = true};
+    }
+    pthread_mutex_unlock(&s->input_lock); SetEvent(s->wake); return true;
+}
+bool mr_paste(MRSession *s, const uint8_t *text, size_t length) {
+    if (!s || !text || length < 2 || length > 16u * 1024u * 1024u || length % 2 || text[length - 1] || text[length - 2] || !atomic_load(&s->connected) || !atomic_load(&s->clipboard_available)) return false;
+    uint8_t *copy = malloc(length);
+    if (!copy) return false;
+    memcpy(copy, text, length);
+    pthread_mutex_lock(&s->input_lock);
+    if (!s->input_enabled || s->paste_pending || s->offer_pending || atomic_load(&s->stop)) {
+        pthread_mutex_unlock(&s->input_lock); memset(copy, 0, length); free(copy); return false;
+    }
+    if (s->outbound_text) { memset(s->outbound_text, 0, s->outbound_length); free(s->outbound_text); }
+    s->outbound_text = copy; s->outbound_length = length; s->paste_epoch = s->input_epoch;
+    s->offer_pending = true; s->paste_pending = true;
+    pthread_mutex_unlock(&s->input_lock); SetEvent(s->wake); return true;
+}
+size_t mr_copy_frame_update(MRSession *s, uint8_t *buffer, size_t capacity, bool full, MRFrameInfo *info) {
+    pthread_mutex_lock(&s->frame_lock);
+    *info = (MRFrameInfo){.width = s->width, .height = s->height, .stride = (s->width * 4 + 255u) & ~255u,
+        .generation = s->frame_generation, .sequence = s->frame_sequence};
+    size_t size = (size_t)info->stride * s->height;
+    if (!s->frame_dirty && !full) size = 0;
+    if (size && buffer && capacity >= size) {
+        info->x = full ? 0 : s->dirty_left; info->y = full ? 0 : s->dirty_top;
+        info->dirty_width = full ? s->width : s->dirty_right - s->dirty_left;
+        info->dirty_height = full ? s->height : s->dirty_bottom - s->dirty_top;
+        for (uint32_t y = info->y; y < info->y + info->dirty_height; y++) {
+            size_t offset = (size_t)y * s->stride + info->x * 4;
+            memcpy(buffer + (size_t)y * info->stride + info->x * 4, s->frame + offset, info->dirty_width * 4);
+        }
+        s->snapshot_bytes += (uint64_t)info->dirty_width * info->dirty_height * 4;
+        s->frame_dirty = false;
+    }
+    pthread_mutex_unlock(&s->frame_lock); return size;
+}
+void mr_statistics(MRSession *s, MRStatistics *stats) {
+    *stats = (MRStatistics){.frames = atomic_load(&s->frame_sequence), .bridge_bytes = atomic_load(&s->frame_copied_bytes), .snapshot_bytes = atomic_load(&s->snapshot_bytes)};
+    stats->codec = atomic_load(&s->codec); stats->surface_commands = atomic_load(&s->surface_commands);
+    stats->surface_nanoseconds = atomic_load(&s->surface_nanoseconds);
+}
+
+uint32_t mr_decoder_backend(void) {
+#ifdef MACRDP_HARDWARE_TEST
+    extern uint32_t freerdp_macrdp_decoder_backend(void);
+    return freerdp_macrdp_decoder_backend();
+#else
+    return 1;
+#endif
+}

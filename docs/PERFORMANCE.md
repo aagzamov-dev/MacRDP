@@ -58,3 +58,27 @@ Store only sanitized aggregate results. No production screen recordings, typed c
 The deterministic bridge test now verifies a 32×32 update copies 4,096 bytes into the bridge snapshot instead of the complete 6,400,000-byte 1600×1000 surface. The first frame and resolution changes still copy the full surface. This measures the bridge copy decision only, not end-to-end FPS, decoding cost, or total memory bandwidth. Presentation still takes a complete snapshot, but on a dedicated background queue with bounded reusable buffers.
 
 The displayed FPS counts new frames drawn by the native view, sampled about once per second; it is not the panel refresh rate or a measurement of key-to-pixel latency. Presentation is skipped on an inactive Space or occluded/minimized window. Consecutive mouse moves coalesce while button/keyboard order remains intact.
+
+## 0.3.0 code-only optimization — 2026-10-28
+
+Presentation now uses dirty-region snapshots into reusable shared Metal buffers, ordered partial blits into a persistent texture, and a bounded GPU queue. Snapshot preparation starts on update arrival rather than waiting for the next display-link callback. No display-link polling occurs while idle or hidden. Pipeline compilation is asynchronous. CoreGraphics remains a full-snapshot fallback.
+
+The synthetic 3840×2160 bridge test verifies a 32×32 change copies 4,096 snapshot bytes instead of 33,177,600 bytes (the previous complete snapshot). This is a byte-count result for that workload, not an FPS claim; full-screen changes still require full image updates. Tests also cover accumulated dirty regions, too-small buffer retry, idle snapshots, aligned staging stride and full replacement after resize. Real decoding, GPU execution, memory peaks and Windows App comparisons remain unmeasured because app launch and live sessions were explicitly deferred to the user.
+
+The session diagnostics report completed new-frame rate, last observed graphics codec, snapshot MB/s, graphics-command average time and GPU-completion p95 including queue time. No typed text, clipboard contents or remote pixels are written into diagnostics.
+
+
+## 0.3.12 code-only scheduling cleanup — 2026-10-29
+
+The display link now stays active while a background snapshot is being prepared, rather than pausing merely because the prepared slot is temporarily empty. It still pauses when there is no queued/preparing frame or redraw. View layout compares bounds and backing size before requesting redraw/debounced remote resize. Metal layer geometry/scale and published FPS/detail are assigned only when changed. Backing conversion is reused within each presentation callback.
+
+These changes remove avoidable scheduling and invalidation work; no live FPS or latency improvement is claimed. Retina pixels, remote DPI, the 60 Hz presentation preference, bounded staging/GPU queues, dirty-update ordering, floating controls, and manual VPN waiting are preserved. The existing bridge tests pass for accumulated dirty regions, resize, retry and idle snapshots; headless model tests pass and the native fixture compiles without execution. Live profiling, drawable acquisition stalls and software decode cost remain unmeasured; software decoding is unchanged.
+
+
+## Isolated hardware decoder experiment — 0.3.13
+
+`MacRDP Hardware Test` (`uz.macrdp.hardwaretest`, build 22) uses a project-local FreeRDP 3.32.2 with FFmpeg hardware acceleration enabled. Build via `bash scripts/build-hardware-dependencies.sh`, then `bash scripts/package-test-app.sh 0.3.13 hardware`. The source archive is pinned and SHA-256 verified. Homebrew libraries and the existing 0.3.12 app are unchanged. The new app has separate preferences and credential-helper identity, so it needs its own initial setup/permissions. Manual VPN waiting and floating controls are unchanged.
+
+The hardware variant sets SoftwareGdi=false because FreeRDP gates H.264 hardware acceleration on that setting; GDI composition still feeds the existing BGRA/Metal pipeline. The local patch handles software frames returned after hardware negotiation fails, selects a software pixel format when VideoToolbox is unavailable, and exports a last-successful-decode status. Diagnostics show VideoToolbox decode, Software decode, or awaiting H.264 frames. This reports actual returned frame type, not a promise about every codec or frame. No zero-copy claim: transfer/conversion/composition remain.
+
+Headless synthetic AVC420 testing on this M2 Pro returned VideoToolbox-backed frames. Forcing an unavailable VAAPI device returned software frames successfully. The 64×64 test image matched pixel-for-pixel between both outputs (maximum RGB channel difference 0). Reproduce with `bash scripts/test-hardware-decoding.sh`. No MacRDP app, VPN or remote session was run. Live AVC444/AVC444v2, Retina resize/reconnect, runtime-device-loss behavior and FPS/latency comparisons remain untested. Software fallback is verified for device initialization failure; arbitrary mid-stream faults may still require reconnecting. The baseline app remains available for comparison.

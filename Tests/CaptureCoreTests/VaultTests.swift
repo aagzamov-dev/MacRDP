@@ -102,4 +102,42 @@ func testCorruptKeychainRecordFailsClosed() throws {
     XCTAssertThrowsError(try AppVault(store: store))
 }
 
+func testOwnerResetPreservesPasswordsAndRecoversCorruptPIN() throws {
+    let store = MemoryStore()
+    let original = try AppVault(store: store)
+    try original.setup(pin: "1234")
+    let id = UUID()
+    try original.savePassword("fixture-password", profile: id)
+    try store.write(Data("broken".utf8), account: "app-lock")
+    let recovered = try AppVault.resetPINAfterOwnerAuthentication("5678", store: store)
+    XCTAssertEqual(try recovered.password(profile: id), "fixture-password")
+    recovered.lock()
+    XCTAssertThrowsError(try recovered.unlock(pin: "1234"))
+    try recovered.unlock(pin: "5678")
+}
+
+func testOwnerResetFailurePreservesOldPIN() throws {
+    let store = MemoryStore()
+    let original = try AppVault(store: store)
+    try original.setup(pin: "1234")
+    XCTAssertThrowsError(try AppVault.resetPINAfterOwnerAuthentication("bad", store: store))
+    store.failWrites = true
+    XCTAssertThrowsError(try AppVault.resetPINAfterOwnerAuthentication("5678", store: store))
+    store.failWrites = false
+    let reopened = try AppVault(store: store)
+    try reopened.unlock(pin: "1234")
+}
+
+func testOwnerUnlockClearsPINThrottleWithoutChangingPIN() throws {
+    let store = MemoryStore()
+    let vault = try AppVault(store: store)
+    try vault.setup(pin: "1234")
+    vault.lock()
+    for _ in 0..<5 { XCTAssertThrowsError(try vault.unlock(pin: "0000")) }
+    try vault.unlockAfterOwnerAuthentication()
+    XCTAssertTrue(vault.isUnlocked)
+    vault.lock()
+    try vault.unlock(pin: "1234")
+}
+
 }

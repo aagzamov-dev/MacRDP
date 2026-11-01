@@ -16,6 +16,7 @@ xcrun swiftc -swift-version 6 -disable-sandbox -module-cache-path build/swift-mo
     -F Vendor/Sparkle -framework Sparkle -Xlinker -rpath -Xlinker "$project_dir/Vendor/Sparkle" \
     -L/opt/homebrew/lib -lfreerdp-client3 -lfreerdp3 -lwinpr3 -framework Security \
     Tests/NativeSmoke/main.swift -o build/macrdp-native-smoke
+if [[ "${1:-}" == '--build-only' ]]; then exit 0; fi
 python3 - <<'PYTEST'
 import subprocess
 for mode in ('--termination-fixture', '--restart-wait-fixture'):

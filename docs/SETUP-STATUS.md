@@ -157,3 +157,44 @@ The user made Windows App-like Retina optimization mandatory. Updated the new-ch
 - Native subprocess tests passed for app exit with an attached sheet and reopening only after a dummy parent exits. Inline update state tests cover progress, cancellation, one-shot install and error acknowledgements. These tests do not claim a complete real Sparkle replacement/relaunch of the user's installed app.
 
 - Release-gate diagnosis reproduced the actual macOS quit rejection outside the sandbox: terminate returned without exiting while a sheet prevented termination. Local SwiftUI sheets now set NSWindow.preventsApplicationTerminationWhenModal to false via their attached view. The regression fixture lays out a real hosted sheet before asserting this policy and requesting process termination. Earlier sandbox-only success was not sufficient evidence.
+
+## Windows → Mac text clipboard — unreleased
+
+- Added default-enabled, persisted **Settings → Session → Clipboard** sharing toggle. Changes apply to new Windows copies during an existing session.
+- FreeRDP 3.32.2's cliprdr channel imports CF_UNICODETEXT only. Local clipboard/file transfer is disabled by the feature mask, no Mac pasteboard reader is installed, and clipboard text is never logged. UTF-16 validation, a 16 MiB response limit, newline conversion and stale-response/settings/session guards protect delivery.
+- Code-only validation passed: 47 core tests, mocked clipboard negotiation/data/lifecycle tests, settings persistence/delivery tests with an injected writer, existing input queue/cleanup tests, and an unsigned Debug Xcode build (compiler plugin sandbox disabled in the build invocation).
+- No app launch, real pasteboard access, live Windows session, release packaging, installation or publication was performed. Physical Windows → Mac copy/paste remains unverified.
+
+## Keep awake while connected — unreleased
+
+- Added a default-on, persisted Session → Power setting using the public ProcessInfo activity API, with no timer or global power preference changes. Saving the setting updates an active session; failure, disconnection and shutdown release the activity.
+- Unsigned Debug Xcode build and native smoke tests passed, including default/persistence, live toggle, repeated connected events, focus preservation, terminal cleanup, reconnect and late state changes after shutdown. Actual idle-sleep/display behavior during a live Windows session remains a manual check.
+
+## 0.3.0 optimization and feature pass — 2026-10-28
+
+- Added bounded dirty-region Metal presentation, asynchronous frame preparation and shader setup, idle/hidden display-link suspension, and CoreGraphics fallback. Kept the existing icon-only toolbar.
+- Added visible connection-failure recovery, cancellable bounded retries for established saved-credential sessions, search/favorites/recents/duplicate, window geometry restoration, per-PC overrides, fixed resolution and actual-pixel panning, explicit outbound clipboard paste, Windows security/task actions, audio playback and native text/IME mode.
+- 53 core tests passed. Mocked bridge tests passed for input ordering/cleanup, clipboard policy, accumulated frame regions, resize/buffer capacity, Unicode input and clipboard acknowledgement/cancellation. ASan/UBSan and C static analysis passed for the bridge update tests. Headless model tests passed for per-PC options, persistence, failure visibility and retry cancellation, using injected permission and clipboard handlers with keep-awake disabled; no app, window or network session was started.
+- Native smoke test executable was compiled only, using `scripts/test-native.sh --build-only`. The UI subprocess tests were not run. Debug and signed Release builds passed. The self-contained 0.3.0 (build 9) manual-test app bundles 32 native libraries; signature and archive checks are recorded with the artifact.
+- Existing signed credential helper remains unchanged. No app launch, Windows connection, real pasteboard read/write, saved Windows password access, installation, push or publication was performed. Live FPS, GPU rendering, hardware decoding, audio/IME interoperability and manual acceptance remain unverified. The optional offline Metal compiler is unavailable; runtime shader compilation has a CoreGraphics fallback.
+
+### 0.3.1 test build: Mac account unlock and PIN recovery
+
+Implemented native LocalAuthentication unlock and PIN reset with Mac password fallback, preserving saved credentials and separate test identity. Authentication is cancelled on locking/shutdown and stale results cannot reopen the workspace. Verified with 56 core tests and injected headless model checks; actual OS dialogs and session behavior remain untested as requested. Packaging now removes its temporary source/build copy after completion.
+
+### 0.3.3 test build: floating controls layering
+
+Addressed the reported controls disappearing after connection by creating the remote NSView's backing layer during initialization rather than changing its layer backing when Metal starts. Clip the renderer to the desktop view and give the SwiftUI controls a separate compositing group above the desktop. Controls remain unconditional across connection phases; release icon, positioning, input actions and pixel geometry are unchanged. Release build and static checks only: the app was not launched and post-connection visibility still requires the user's manual verification.
+
+### 0.3.5 test build
+
+Added per-PC macOS VPN selection and readiness gating with ownership-limited, non-forced cleanup. Read-only SystemConfiguration discovery confirmed two installed Kerio profiles; live connection compatibility remains untested at the user's request. Added full-screen Dock presentation handling and a one-time default-on migration, preserving subsequent opt-out choices. Core and injected headless tests cover failure/cancellation and existing-VPN preservation; no app launch or VPN start/stop performed.
+
+### 0.3.7 test build
+
+Replaced generic VPN-start calls for Kerio with an Accessibility menu adapter using the exact selected profile. Existing macOS status polling and app-owned cleanup remain; normal termination now waits for asynchronous VPN cleanup. Requires the running Kerio status icon and Accessibility for MacRDP. Mock/headless behavior checked and native target compiled without execution; actual menu integration remains unverified because no VPN or app was run.
+
+
+### 0.3.8: remove VPN automation
+
+Removed native VPN start/stop, Kerio menu Accessibility code, automatic-disconnect setting and asynchronous quit cleanup. Retained profile selection and cancellable, read-only waiting for manual VPN connection. Revised Dock eligibility to follow the active Windows session rather than keyboard-capture state, and reassert hiding if overwritten. 57 core tests and headless passive-wait/Dock checks passed. No app or VPN was run.

@@ -88,6 +88,8 @@ public struct CaptureMachine: Sendable {
 }
 
 public enum WindowsAction: String, Sendable {
+    case secureAttention = "Ctrl+Alt+Delete"
+    case taskManager = "Task Manager"
     case taskView = "Windows Task View"
     case appSwitcher = "Windows app switcher"
     case nextTab = "Next Windows tab"
@@ -98,6 +100,8 @@ public enum WindowsAction: String, Sendable {
     public var keys: [KeyStroke] {
         let codes: [UInt16]
         switch self {
+        case .secureAttention: codes = [59, 58, 117]
+        case .taskManager: codes = [59, 56, 53]
         case .taskView: codes = [55, 48]
         case .appSwitcher: codes = [58, 48]
         case .nextTab: codes = [59, 48]

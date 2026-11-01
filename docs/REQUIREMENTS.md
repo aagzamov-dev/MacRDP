@@ -139,7 +139,7 @@ Keep NLA and TLS verification. For a self-signed/untrusted RDP certificate, show
 
 The full-screen toolbar should show host, connection status, capture status, release shortcut, Release, Disconnect, and settings access. Open it only by clicking the small Controls button; never reveal it on hover. Keep the panel compact and labels readable. Release input before a local dialog receives keys. Standard appearance, light/dark mode, keyboard accessibility, and readable controls are enough for the first build.
 
-Preferences after the first milestone: capture mode, release shortcut/action, modifier preset, resolution/scale, clipboard opt-in, audio playback, and experimental gesture mappings. Keep advanced settings behind a compact section with sensible defaults.
+Preferences after the first milestone: capture mode, release shortcut/action, modifier preset, resolution/scale, Windows → Mac text clipboard sharing (enabled by default, with a persisted off switch), audio playback, and experimental gesture mappings. Keep advanced settings behind a compact section with sensible defaults.
 
 Log state transitions, error codes, negotiated capabilities and aggregate timing only. Never persist passwords, typed text, clipboard contents, screenshots, or raw keyboard streams. Diagnostic export is explicit and redacted. Do not automatically upload telemetry.
 

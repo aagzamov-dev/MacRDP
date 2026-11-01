@@ -316,6 +316,65 @@ func verifyPCManagement() async throws {
 try await verifyPCManagement()
 
 @MainActor
+func verifySessionPreferences() throws {
+    let suite = "MacRDP.native-session.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(defaults: defaults, secretStore: TestSecrets())
+    precondition(model.sessionControlsPosition == .topCenter && !model.reverseHorizontalScrolling)
+    let surface = RemoteDesktopView()
+    surface.model = model; model.surface = surface
+    func save(_ position: SessionControlsPosition, reversed: Bool) {
+        model.saveSettings(shortcut: model.shortcut, three: model.threeFinger, four: model.fourFinger,
+                           exclusive: model.captureSystemShortcuts, controlsPosition: position,
+                           reverseHorizontalScrolling: reversed, dismiss: false)
+    }
+    precondition(surface.scrollWheelFlags(deltaX: 2, deltaY: -1, precise: true) == [0x03fd, 0x0406])
+    precondition(surface.scrollWheelFlags(deltaX: 1, deltaY: 1, precise: false) == [0x0278, 0x0478])
+    precondition(surface.scrollWheelFlags(deltaX: 200, deltaY: 0, precise: true) == [0x04ff, 0x04ff, 0x045a])
+    precondition(surface.scrollWheelFlags(deltaX: 0.25, deltaY: 0, precise: true).isEmpty)
+    save(.bottomRight, reversed: true)
+    model.saveSettings(shortcut: model.shortcut, three: model.threeFinger, four: model.fourFinger,
+                       exclusive: model.captureSystemShortcuts, dismiss: false)
+    precondition(model.sessionControlsPosition == .bottomRight && model.reverseHorizontalScrolling)
+    precondition(surface.scrollWheelFlags(deltaX: 0.1, deltaY: 0, precise: true).isEmpty)
+    surface.resetTouches()
+    precondition(surface.scrollWheelFlags(deltaX: 2, deltaY: -1, precise: true) == [0x03fd, 0x05fa])
+    precondition(surface.scrollWheelFlags(deltaX: -2, deltaY: 1, precise: true) == [0x0203, 0x0406])
+    precondition(surface.scrollWheelFlags(deltaX: 1, deltaY: 1, precise: false) == [0x0278, 0x0588])
+    precondition(surface.scrollWheelFlags(deltaX: 200, deltaY: 0, precise: true) == [0x0501, 0x0501, 0x05a6])
+    for _ in 0..<3 { precondition(surface.scrollWheelFlags(deltaX: 0.1, deltaY: 0, precise: true).isEmpty) }
+    precondition(surface.scrollWheelFlags(deltaX: 0.1, deltaY: 0, precise: true) == [0x05ff])
+    surface.resetTouches()
+    precondition(surface.scrollWheelFlags(deltaX: 0.1, deltaY: 0, precise: true).isEmpty)
+    save(.topCenter, reversed: false)
+    precondition(surface.scrollWheelFlags(deltaX: 2, deltaY: 0, precise: true) == [0x0406])
+
+    model.unlocked = true; model.phase = .connected
+    model.buttonVerified = true; model.captureValidated = true
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let view = NSHostingView(rootView: SessionWindowView(model: model))
+    window.contentView = view
+    for position in SessionControlsPosition.allCases {
+        save(position, reversed: true)
+        let reopened = AppModel(defaults: defaults, secretStore: TestSecrets())
+        precondition(reopened.sessionControlsPosition == position && reopened.reverseHorizontalScrolling)
+        reopened.shutdown()
+        model.setSessionControlsOpen(true)
+        precondition(!model.remoteInput && !model.canCapture)
+        try render(view, name: "client-session-" + position.rawValue)
+        model.setSessionControlsOpen(false)
+    }
+    defaults.set("unknown-position", forKey: "sessionControlsPosition")
+    let fallback = AppModel(defaults: defaults, secretStore: TestSecrets())
+    precondition(fallback.sessionControlsPosition == .topCenter)
+    model.shutdown(); fallback.shutdown()
+    print("PASS six persisted session control positions, unknown-position fallback, horizontal scroll reversal, unchanged vertical scrolling, wheel chunking and fractional/reset behavior.")
+}
+try verifySessionPreferences()
+
+@MainActor
 func verifyKeyboardSetup() async throws {
     let suite = "MacRDP.native-keyboard.\(UUID())"
     let defaults = UserDefaults(suiteName: suite)!
@@ -417,3 +476,45 @@ func verifyKeyboardSetup() async throws {
     print("PASS keyboard permission denial/grant/revocation, explicit permission requests, setup gates, focus transition, truthful capture status, and restart success/failure. No real permissions or restart attempted.")
 }
 try await verifyKeyboardSetup()
+
+await MainActor.run {
+    let suite = "uz.macrdp.sleep-tests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let access = KeyboardAccess(isTrusted: { false }, request: {}, openSettings: { false })
+    let model = AppModel(defaults: defaults, secretStore: TestSecrets(), keyboardAccess: access)
+    precondition(model.keepAwake && model.sleepActivity == nil)
+    for phase: SessionPhase in [.connecting, .authenticating, .failed, .disconnected] {
+        model.phase = phase
+        precondition(model.sleepActivity == nil)
+    }
+    model.phase = .connected
+    weak let activity = model.sleepActivity
+    precondition(activity != nil)
+    model.phase = .connected
+    model.suspendInput(reason: "Focus moved to another app")
+    precondition(model.sleepActivity === activity)
+    model.saveSettings(shortcut: model.shortcut, three: model.threeFinger, four: model.fourFinger,
+                       exclusive: false, keepAwake: false, dismiss: false)
+    precondition(model.sleepActivity == nil && activity == nil)
+    let restored = AppModel(defaults: defaults, secretStore: TestSecrets(), keyboardAccess: access)
+    precondition(!restored.keepAwake)
+    restored.phase = .connected
+    precondition(restored.sleepActivity == nil)
+    restored.shutdown()
+    model.saveSettings(shortcut: model.shortcut, three: model.threeFinger, four: model.fourFinger,
+                       exclusive: false, keepAwake: true, dismiss: false)
+    precondition(model.sleepActivity != nil && defaults.bool(forKey: "keepAwake"))
+    model.phase = .failed
+    precondition(model.sleepActivity == nil)
+    model.phase = .connected
+    precondition(model.sleepActivity != nil)
+    model.disconnect()
+    precondition(model.sleepActivity == nil)
+    model.phase = .connected
+    model.shutdown()
+    precondition(model.sleepActivity == nil)
+    model.phase = .connected
+    precondition(model.sleepActivity == nil)
+    print("PASS keep-awake default, persistence, live settings, focus preservation, failure/disconnect cleanup, reconnect and shutdown guards.")
+}

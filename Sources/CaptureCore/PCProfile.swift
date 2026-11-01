@@ -1,4 +1,24 @@
 import Foundation
+import CoreGraphics
+
+public enum DesktopResolution: String, Codable, CaseIterable, Sendable {
+    case dynamic = "Match window", hd = "1280 × 720", fullHD = "1920 × 1080", qhd = "2560 × 1440", uhd = "3840 × 2160"
+    public var size: CGSize? {
+        switch self {
+        case .dynamic: nil
+        case .hd: CGSize(width: 1280, height: 720)
+        case .fullHD: CGSize(width: 1920, height: 1080)
+        case .qhd: CGSize(width: 2560, height: 1440)
+        case .uhd: CGSize(width: 3840, height: 2160)
+        }
+    }
+}
+public enum DesktopViewMode: String, Codable, CaseIterable, Sendable {
+    case fit = "Fit to window", actual = "Actual pixels"
+}
+public enum TextInputMode: String, Codable, CaseIterable, Sendable {
+    case physical = "Windows keyboard", text = "Mac text / IME"
+}
 
 public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
     public var id = UUID()
@@ -11,6 +31,18 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
     public var optimizeRetina = true
     public var desktopScale = 0
     public var openFullScreen = true
+    public var favorite = false
+    public var lastConnected: Date?
+    public var resolution = DesktopResolution.dynamic
+    public var viewMode = DesktopViewMode.fit
+    public var audioPlayback = false
+    public var reconnectAutomatically = true
+    public var textInputMode = TextInputMode.physical
+    public var modifierMapping: ModifierMapping?
+    public var clipboardSharing: Bool?
+    public var allowMacPaste = true
+    public var useVPN = false
+    public var vpnServiceID: String?
 
     public init() {}
     public var endpoint: String { "\(host.lowercased()):\(port)" }
@@ -20,11 +52,14 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
         if host.contains("://") || host.contains("/") { return "Enter a hostname or IP address without a URL or path." }
         guard let value = UInt16(port), value > 0 else { return "Use a port between 1 and 65535." }
         if desktopScale != 0 && !(100...500).contains(desktopScale) { return "Windows scaling must be between 100% and 500%." }
+        if useVPN && (vpnServiceID?.isEmpty != false) { return "Select a VPN connection or turn off Use VPN." }
         return nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, domain, rememberPassword, optimizeRetina, desktopScale, openFullScreen
+        case useVPN, vpnServiceID
+        case favorite, lastConnected, resolution, viewMode, audioPlayback, reconnectAutomatically, textInputMode, modifierMapping, clipboardSharing, allowMacPaste
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -38,6 +73,18 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
         optimizeRetina = try c.decodeIfPresent(Bool.self, forKey: .optimizeRetina) ?? true
         desktopScale = try c.decodeIfPresent(Int.self, forKey: .desktopScale) ?? 0
         openFullScreen = try c.decodeIfPresent(Bool.self, forKey: .openFullScreen) ?? true
+        favorite = try c.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
+        lastConnected = try c.decodeIfPresent(Date.self, forKey: .lastConnected)
+        resolution = try c.decodeIfPresent(DesktopResolution.self, forKey: .resolution) ?? .dynamic
+        viewMode = try c.decodeIfPresent(DesktopViewMode.self, forKey: .viewMode) ?? .fit
+        audioPlayback = try c.decodeIfPresent(Bool.self, forKey: .audioPlayback) ?? false
+        reconnectAutomatically = try c.decodeIfPresent(Bool.self, forKey: .reconnectAutomatically) ?? true
+        textInputMode = try c.decodeIfPresent(TextInputMode.self, forKey: .textInputMode) ?? .physical
+        modifierMapping = try c.decodeIfPresent(ModifierMapping.self, forKey: .modifierMapping)
+        clipboardSharing = try c.decodeIfPresent(Bool.self, forKey: .clipboardSharing)
+        useVPN = try c.decodeIfPresent(Bool.self, forKey: .useVPN) ?? false
+        vpnServiceID = try c.decodeIfPresent(String.self, forKey: .vpnServiceID)
+        allowMacPaste = try c.decodeIfPresent(Bool.self, forKey: .allowMacPaste) ?? true
     }
 }
 
@@ -63,8 +110,8 @@ public struct DisplayLayout: Equatable, Sendable {
     public var height: Int
     public var desktopScale: Int
     public let deviceScale = 100
-    public init(points: CGSize, backing: CGSize, retina: Bool, scale: Int) {
-        let pixels = retina ? backing : points
+    public init(points: CGSize, backing: CGSize, retina: Bool, scale: Int, fixed: DesktopResolution = .dynamic) {
+        let pixels = fixed.size ?? (retina ? backing : points)
         width = Int(max(200, min(8192, pixels.width.isFinite ? pixels.width : 200))) / 2 * 2
         height = Int(max(200, min(8192, pixels.height.isFinite ? pixels.height : 200)))
         let factor = points.width > 0 ? backing.width / points.width : 1
@@ -76,16 +123,23 @@ public struct DisplayLayout: Equatable, Sendable {
 public struct RemoteGeometry: Sendable {
     public var bounds: CGRect
     public var remote: CGSize
-    public init(bounds: CGRect, remote: CGSize) { self.bounds = bounds; self.remote = remote }
+    public var mode: DesktopViewMode
+    public var backingScale: CGFloat
+    public var pan: CGPoint
+    public init(bounds: CGRect, remote: CGSize, mode: DesktopViewMode = .fit, backingScale: CGFloat = 1, pan: CGPoint = .zero) {
+        self.bounds = bounds; self.remote = remote; self.mode = mode; self.backingScale = backingScale; self.pan = pan
+    }
     public var imageRect: CGRect {
         guard remote.width > 0, remote.height > 0, bounds.width > 0, bounds.height > 0 else { return .zero }
-        let ratio = min(bounds.width / remote.width, bounds.height / remote.height)
+        let ratio = mode == .actual ? 1 / max(1, backingScale) : min(bounds.width / remote.width, bounds.height / remote.height)
         let size = CGSize(width: remote.width * ratio, height: remote.height * ratio)
-        return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
+        let maxX = max(0, (size.width - bounds.width) / 2), maxY = max(0, (size.height - bounds.height) / 2)
+        return CGRect(x: bounds.midX - size.width / 2 + max(-maxX, min(maxX, pan.x)),
+                      y: bounds.midY - size.height / 2 + max(-maxY, min(maxY, pan.y)), width: size.width, height: size.height)
     }
     public func point(_ local: CGPoint, clamp: Bool = false) -> CGPoint? {
         let rect = imageRect
-        guard rect.width > 0, rect.height > 0, clamp || rect.contains(local) else { return nil }
+        guard rect.width > 0, rect.height > 0, clamp || (bounds.contains(local) && rect.contains(local)) else { return nil }
         return CGPoint(x: max(0, min(remote.width - 1, floor((local.x - rect.minX) / rect.width * remote.width))),
                        y: max(0, min(remote.height - 1, floor((local.y - rect.minY) / rect.height * remote.height))))
     }

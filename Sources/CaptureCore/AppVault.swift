@@ -93,6 +93,28 @@ public final class AppVault {
         }
     }
 
+    public func unlockAfterOwnerAuthentication() throws {
+        if var record {
+            record.failures = 0
+            record.nextAttempt = .distantPast
+            try save(record)
+        }
+        isUnlocked = true
+    }
+
+    public static func resetPINAfterOwnerAuthentication(_ pin: String, store: any SecretStore) throws -> AppVault {
+        let record = LockRecord(pin: try PINRecord.create(pin))
+        let vault = AppVault(store: store, record: record)
+        try vault.save(record)
+        vault.isUnlocked = true
+        return vault
+    }
+
+    private init(store: any SecretStore, record: LockRecord) {
+        self.store = store
+        self.record = record
+    }
+
     public func lock() { isUnlocked = false }
 
     public func savePassword(_ password: String, profile: UUID) throws {

@@ -1,4 +1,28 @@
-# Native RDP client — 2026-10-24
+# Native RDP client
+
+## 0.3.0 — rendering and session improvements (2026-10-28)
+
+The session uses asynchronous Metal pipeline setup, a reusable private desktop texture and at most three reusable shared staging buffers. The bridge accumulates dirty regions until a snapshot is consumed. Partial snapshots update only the affected texture region; a fresh session, surface resize or renderer recovery requests a complete image. GPU commands retain their source frames until completion. Failed Metal setup or execution falls back to full CoreGraphics snapshots. The decoder remains the installed FreeRDP software path; Metal presentation is not hardware video decoding.
+
+Frame preparation starts when updates arrive, independently of the main run loop. The display link sleeps between updates and while the session is hidden, on another Space, minimized or locked. The renderer presents at up to 60 Hz when the host supplies updates. The icon-only controls remain; **Display & performance** adds resolution/fit controls and aggregate codec, copy-rate, graphics-command and GPU-completion statistics. GPU completion time includes queue time and is not network or key-to-pixel latency.
+
+Connection failures retain a visible error and Retry/Enter login actions. An established session with a saved password can retry a transient network failure up to five times (2/4/8/16/30 seconds); cancellation, lock and explicit disconnect stop pending retries. Authentication and certificate failures do not retry. Automatic recovery does not activate a background session window. Saved PCs support search, favorites, recent connections, duplication without copied credentials, and remembered window positions.
+
+Each PC can override the keyboard mapping and inbound clipboard setting, choose fixed resolution or dynamic Retina size, select fit or actual-pixel view, enable audio playback, and select Mac text/IME input. In actual-pixel view, switch control to Mac and scroll to pan; Windows mode keeps normal remote scrolling. Windows UI scale stays separate from resolution and local fitting; profile scale changes apply on reconnect. Mac text/IME mode uses native composition and Unicode events, with system-shortcut capture disabled; physical Windows keyboard mode remains the default. Audio uses FreeRDP's bundled native Mac output backend and defaults off; microphone capture stays disabled.
+
+The Windows actions menu provides Ctrl+Alt+Delete, Task Manager, desktop switching and **Paste Mac text into Windows**. Outbound text is read only for that explicit action, announced through the clipboard channel, then pasted after acknowledgement. It is cleared on input release and protected against stale acknowledgements. It does not continuously mirror the Mac clipboard. Per-PC policy can disable the action. Existing Windows-to-Mac text sharing remains available.
+
+Code-only checks are recorded in SETUP-STATUS.md. This version has not been launched or connected to Windows by the agent, as requested. Runtime Metal compilation, real GPU presentation, audio, IME, clipboard interoperability, recovery and Retina visual acceptance require the user's manual test. The optional offline Metal compiler is absent from this Xcode installation; the small shader is compiled asynchronously by Metal at app runtime, with the CoreGraphics fallback retained.
+
+### Manual checks for this build
+
+1. Connect with Retina and Match window, scroll/drag windows and compare sharpness. Open Display & performance to inspect actual delivered FPS and observed codec.
+2. Resize/full-screen, change resolution, then try Actual pixels and pan while control is set to Mac. Check pointer alignment at corners and after returning from another Space.
+3. Use Ctrl+Alt+Delete and Task Manager; test both clipboard directions, including cancelling or changing focus immediately after Paste.
+4. Enable audio or Mac text/IME in PC details and reconnect. Test composition, Cyrillic/Unicode text, modifiers and the normal physical keyboard mode separately.
+5. Interrupt/restore the network, cancel an automatic retry, and confirm that reconnect stays visible and a background window does not take focus. Test the keyboard release shortcut while scrolling.
+
+## Historical implementation notes
 
 This replaces the local input prototype. The app now links FreeRDP 3.32.2 and implements real RDP sessions. Implementation and code-only integration tests are complete for the features below. Physical keyboard/trackpad acceptance and an authenticated session on the user's Windows PC remain separate verification work.
 
@@ -45,6 +69,14 @@ Ordinary keyboard, pointer, buttons and scrolling use AppKit and require no glob
 
 Three fingers default to Windows desktops left/right. Four fingers default to Mac desktops/release input. Either finger count can instead use Windows desktops, Task View, Mac desktops/release, or Disabled. Windows actions commit on lift, allowing a fourth finger to take priority. Four-finger Mac release can occur as movement crosses the threshold. The app never hides or exits full screen because of a gesture. macOS can reserve gestures before delivering touches to apps; changing the mapping does not change global trackpad preferences or guarantee interception. Space-change notifications release capture even if macOS consumes the gesture.
 
+## Session controls and scrolling
+
+In **Settings → Session**, choose top left, top center (default), top right, bottom left, bottom center, or bottom right for the menu and Windows desktop buttons. Bottom positions open the menu above the buttons. Saving applies to the current session and persists across restarts.
+
+Enable **Reverse horizontal scrolling** to flip left/right two-finger or horizontal mouse-wheel scrolling. It defaults to off and leaves vertical scrolling unchanged. Saving a direction change clears accumulated scroll fractions.
+
+Native smoke checks cover all six saved positions, an unknown-position fallback, compact session previews, positive/negative scroll direction, vertical scrolling, discrete wheels, large-delta splitting, and fractional/reset behavior. Physical touchpad feel in a Windows session still needs manual verification.
+
 ## Display and engine
 
 Retina is on by default. The session view's actual `convertToBacking` geometry determines requested remote pixels; Windows desktop scale is independently automatic or explicitly 100–500%. Device scale uses protocol-valid 100. Lower-resolution performance mode is opt-in. Initial geometry is supplied before connecting; changes are debounced 150 ms and sent on the negotiated RDP display-control channel with server area limits. When a server does not support resizing, the current desktop remains fitted and the footer reports a fixed/awaiting mode. Reconnect after changing per-PC display policy when needed; the server may defer Windows DPI changes until reconnect.
@@ -53,7 +85,7 @@ The CoreGraphics view displays the active decoded GDI frame and maps clicks agai
 
 Each session has one worker for connect, library input, resize and teardown. Event-tap callbacks only enqueue bounded input. Release clears unsent events by generation, prioritizes remote key/button-up cleanup, and cannot wait on a network write. Queue overflow fails closed and disconnects instead of silently dropping key-ups. Cancelling wakes pending certificate decisions. Session generations prevent old worker callbacks updating a replacement connection. A new connection clears the previous host's displayed image; returning to the same live session restores its cached frame/cursor.
 
-The current Homebrew decoder is software based (`WITH_FFMPEG_HWACCEL=OFF`). H.264/AVC444 capabilities are enabled through FreeRDP's common graphics pipeline, but no particular Windows codec or hardware decode result is claimed. Clipboard, sound, gateways, redirection and multiple simultaneous sessions remain outside this requested core implementation.
+The current Homebrew decoder is software based (`WITH_FFMPEG_HWACCEL=OFF`). H.264/AVC444 capabilities are enabled through FreeRDP's common graphics pipeline, but no particular Windows codec or hardware decode result is claimed. Sound, gateways, other redirection and multiple simultaneous sessions remain outside this requested core implementation.
 
 ## Observed verification
 
@@ -95,3 +127,84 @@ Settings now maps physical Command, Control, Option and Shift independently to W
 Three-finger horizontal swipes send the fixed [Windows Ctrl+Windows+Left/Right shortcut](https://support.microsoft.com/en-us/accessibility/windows/keyboard-shortcuts-in-windows), independently of selected modifier mappings. The recognizer now retains a completed movement across partial or empty finger-lift events, keeps four-finger priority, and rejects cancelled gestures. A second Windows virtual desktop must exist. The session’s **Desktops** menu provides Previous/Next buttons to test the same remote action. Settings shows the last gesture result and provides Trackpad settings access when macOS claims the gesture; global gesture preferences are never changed by the app.
 
 Credential access uses a fixed, certificate-verified helper to retain Keychain authorization across app rebuilds. See [release and installation instructions](RELEASING.md). The existing PIN and password records are preserved; the first migration may prompt once per existing Keychain item.
+
+## Windows → Mac text clipboard
+
+Text clipboard sharing is enabled by default. Copy text in Windows using the configured copy shortcut (Command+C with the **Command copies & pastes** preset, otherwise the key mapped to Windows Ctrl+C) or a Windows Copy menu, then switch to a Mac app and paste normally.
+
+Disable **Settings → Session → Clipboard → Share text clipboard: Windows → Mac** and save to stop sharing immediately. The preference persists across restarts; enabling it again applies to subsequent Windows copies without reconnecting. Text already copied to the Mac stays there when sharing is disabled or the session ends.
+
+Only Unicode plain text is imported; Windows line endings become Mac line endings. Images, files, rich formatting and Mac → Windows clipboard sharing are unsupported. Mac clipboard contents are never read or sent to Windows. Sharing does not write to the Mac clipboard while MacRDP is locked or disconnected. Delayed responses from earlier settings or sessions are discarded. Text responses above 16 MiB or malformed UTF-16 are ignored, and clipboard contents are never logged.
+
+Validation for this change uses mock channel callbacks, an injected clipboard writer and text decoding tests. No live Windows copy/paste or application launch was performed.
+
+## Keep awake
+
+Settings → Session → Power includes **Keep awake while connected**, enabled by default. Save settings to apply the choice immediately to the current session and future connections. While enabled and connected, MacRDP prevents idle system and display sleep, including when another app has focus. Disconnect, connection failure and app shutdown release the activity. Manual Sleep and lid-close behavior remain controlled by macOS.
+
+## Separate test installation
+
+`bash scripts/package-test-app.sh 0.3.0` builds **MacRDP Test.app** with bundle identifier `uz.macrdp.test` in a separate generated source directory. The main project identity and fixed production credential helper remain unchanged. The test app uses its own preferences, `uz.macrdp.test.credentials` Keychain service and `uz.macrdp.test.keychain` helper identity; the helper accepts only the test app signed by the same certificate. Normal-release updates are disabled. Set up its PIN, PCs and Accessibility authorization separately. The script builds, signs and packages only; it never launches or installs the app.
+
+### Mac authentication and forgotten PIN (0.3.1 test build)
+
+The lock screen offers native Touch ID or Mac login password authentication, using Apple's `deviceOwnerAuthentication` policy. Choose **Forgot PIN? Reset with Mac account** to authenticate and save a new 4–12 digit PIN without removing saved PCs or passwords. The same reset is available in Security settings. Cancellation or failed authentication does not reset the PIN. A successful reset also recovers a malformed PIN record. MacRDP Test retains its separate `uz.macrdp.test` identity and Keychain service; the main application's PIN is not automatically shared.
+
+Reference: https://developer.apple.com/documentation/localauthentication/lapolicy/deviceownerauthentication
+
+Validation: 56 core tests passed, including reset preservation, invalid/write-failure rollback and PIN throttle recovery. Headless model checks passed for authentication success, cancellation, reset and late completion after locking. No app launch, native authentication prompt, or live RDP connection was performed; Touch ID/password dialog behavior remains for manual testing.
+
+### Optional Dock hiding (0.3.4 test build)
+
+Settings → Session → Dock includes **Hide Dock while controlling Windows**, off by default. Enable it and save to prevent edge-hover Dock activation during normal Windows input or exclusive capture. Release to Mac, application/window focus loss, local dialogs, disconnect and shutdown use the existing input cleanup to restore the saved presentation options. The setting does not change global Dock preferences or the floating session controls.
+
+Headless checks with injected presentation options passed for persistence, normal/exclusive modes, toggling off, release, focus-loss cleanup and shutdown. Actual Dock behavior requires manual testing; no app was launched.
+
+### Per-PC VPN and full-screen Dock handling (0.3.5 test build)
+
+Edit a saved PC → VPN → enable **Use VPN before connecting**, select the exact saved macOS VPN profile, and optionally enable **Disconnect VPN when session ends**. Windows connection waits for VPN connected status (up to 60 seconds), with cancellation and a clear error if startup fails. Normal automatic RDP retries retain the VPN. A VPN already connected or connecting is never claimed or disconnected by MacRDP. Only successful start requests made by this process are eligible for non-forced cleanup. An unfinished VPN start is cleaned up on failure/cancel even when the keep-connected option is selected. macOS may retain a shared connection needed by another app.
+
+Read-only compatibility check found both installed Kerio profiles using SystemConfiguration service discovery and status queries. This does not prove live authentication/start/stop behavior: no VPN was started or stopped for validation. Kerio configuration, passwords, persistent mode and certificate trust were not read or changed. The integration uses the selected profile's existing saved login and normal macOS VPN handling.
+
+Dock hiding now also participates in the full-screen presentation callback and is reapplied after entering/exiting full screen. This update enables the setting once, including upgrades from the prior default-off build; subsequent user choices remain saved. The existing release/focus-loss cleanup and floating controls remain in place.
+
+Validation: 57 core tests; headless tests for VPN readiness, reused/pre-existing connections, ownership, keep-connected behavior, failures/timeouts/cancellation and late completion, plus VPN failure preventing RDP creation. Dock option and full-screen presentation restoration checked with injected settings. App and real VPN connections were not run. Manual checks still required: selected Kerio login, Windows readiness, app-owned VPN disconnect, existing-VPN preservation, and Dock edge hover/release in full screen.
+
+### Kerio corrections (0.3.6)
+
+The first VPN integration incorrectly treated every macOS Kerio service record as a current saved Kerio profile. Read-only inspection found two OS records but only one saved Kerio profile label. Discovery now matches Kerio service names against the profile descriptions in its user configuration, retaining only descriptions and never copying credentials or configuration into diagnostics. No records are deleted or modified. The checked machine now exposes only `baik_vpn`; reselect it if a saved PC still references the unavailable `baik.uz` record.
+
+Removed the premature two-second failure while a newly requested VPN still reports disconnected. Initial readiness now waits up to the full 60-second limit; an observed connecting-to-disconnected transition still fails. Provider status codes are shown when available, without assuming a password or certificate cause. Both old records last reported code 7, whose meaning was not established. Regression checks cover delayed startup and profile-label extraction. Read-only discovery verified one entry. This is not live confirmation of automatic Kerio startup: no VPN or app was launched.
+
+### Kerio menu integration (0.3.7)
+
+The user confirmed that Kerio's own menu connects successfully while generic SystemConfiguration starts fail. Kerio profiles now use public Accessibility actions on the running Kerio status app: open its status menu and press the exact saved profile name. Generic macOS VPNs retain their original API path. MacRDP never extracts Kerio passwords or sends private provider options. Keep Kerio running with its status icon visible and grant Accessibility to this MacRDP copy. The current menu adapter recognizes Kerio's English `Disconnect` action; unsupported or ambiguous menu layouts fail with a visible error instead of guessing.
+
+Connection status is still checked before starting Windows. Pre-existing VPNs are not touched. Cleanup only applies after this process successfully pressed the profile action; it verifies the selected service remains active, rejects other active profiles, and stops claiming a connection whose observed session timestamp changes. Cancellation drains an in-flight menu start before cleanup. Normal app quit waits for VPN cleanup before exiting. Cleanup may fail if Kerio disappears, permission is revoked, or its menu changes; the app then asks for manual disconnect. Forced process termination cannot guarantee menu cleanup.
+
+Validation: headless tests passed for exact-profile menu selection, ambiguity rejection, other-profile preservation, delayed readiness, ownership, cancellation during start and exactly-once cleanup. Native smoke target compiled only. The computer-use inspection timed out; no Kerio menu action or live VPN start/stop was executed, and the test app was not launched. This new path still requires manual verification with Kerio 9.6.1.
+
+
+### Current VPN behavior: passive waiting only (0.3.8)
+
+Supersedes the automatic VPN behavior described in 0.3.5–0.3.7. All VPN start/stop calls and the Kerio menu adapter were removed. In PC details, enable **Wait for VPN before connecting** and select the saved VPN. The app shows **Waiting for VPN connection** until that VPN reports connected, then proceeds to Windows. Connect/disconnect the VPN yourself. Waiting has no timeout and can be cancelled; cancelling, disconnecting Windows, locking, or quitting never changes the VPN. Existing saved selections continue to work; obsolete automatic-disconnect fields are ignored.
+
+Dock hiding is now based on the foreground Windows session and Windows input selection, independently of keyboard capture or floating-control focus. It remains enabled by default, restores on explicit Release to Mac/app switch/local dialogs, and rechecks presentation options while active. The floating controls are unchanged. Validation: 57 core tests and injected headless tests passed for passive waiting, cancellation, Dock eligibility, restoration and reapplication. App and live Dock behavior were not run; manual confirmation remains required.
+
+### Active-window Dock rule (0.3.9)
+
+Dock hiding now depends only on the enabled setting and the remote-session window being the active app's main visible window. Mac input, Windows input, disconnected/waiting screens, and floating controls all use the same rule. Leaving the session window restores the previous presentation options. Focus lifecycle callbacks apply the rule immediately, with the existing timer as a fallback. VPN remains manual-only. Headless checks/build only; the app was not launched. The built app is delivered on the Desktop.
+
+
+### Full-screen Dock recovery after app switching (0.3.10)
+
+The previous recovery could write an unchanged requested presentation value when the effective system state had reverted to auto-hide. Recovery now transitions through a valid auto-hide value before reinstating hideDock when requested and effective state disagree. Stable state produces no extra writes. Full-screen delegate options no longer replace the saved application restoration state; application updates retain AppKit-owned full-screen/toolbar flags. VPN remains passive/manual-only; floating controls are unchanged.
+
+Validation: headless injected-state tests cover repeated switch/return divergence, a setter ignoring unchanged requests, stable-state writes and restoration. This models the reported failure path; it is not a live reproduction. App switching and bottom-edge hovering in real fullscreen remain user acceptance checks. Test app built without launching.
+
+
+### Dock hiding removed (0.3.11)
+
+Removed the optional Dock hiding setting, preference migration, focus callbacks, full-screen presentation override, effective-state recovery and timer-based presentation checks after user testing found the behavior unreliable. Old saved Dock preferences are ignored. Normal session input leaves presentation options alone. Exclusive keyboard capture retains its original auto-hide/process-switching behavior, with restoration on release, focus loss and shutdown; Force Quit remains available. Manual VPN waiting and floating controls are unchanged. No rendering or transport changes were made.
+
+Validation uses headless capture cleanup and passive VPN tests, core tests and a signed Release build. No app was launched; smoothness improvement has not been measured.

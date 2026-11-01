@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.tabbingMode = .disallowed
         window.delegate = self
         window.contentViewController = NSHostingController(rootView: ContentView(model: model))
-        window.center(); mainWindow = window
+        window.center(); window.setFrameAutosaveName("MacRDP Workspace"); mainWindow = window
         model.showMainWindow = { [weak self] in self?.showMain() }
         model.closeSessionWindow = { [weak self] in self?.closeSession() }
         model.showSessionWindow = { [weak self] in self?.showSession() }
@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.activate(ignoringOtherApps: true)
     }
     private func showSession() {
-        guard model.unlocked, model.sessionRunning, model.activePC != nil else { showMain(); return }
+        guard model.unlocked, model.activePC != nil else { showMain(); return }
         if sessionWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -65,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             window.acceptsMouseMovedEvents = true
             window.delegate = self
             window.contentViewController = NSHostingController(rootView: SessionWindowView(model: model))
-            window.center(); sessionWindow = window
+            window.center(); window.setFrameAutosaveName("MacRDP Session " + (model.activePC?.id.uuidString ?? "default")); sessionWindow = window
         }
         model.window = sessionWindow
         sessionWindow?.title = model.activePC?.name ?? "Windows"
@@ -111,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard notification.object as? NSWindow === sessionWindow else { return }
         model.isFullScreen = true; model.fullScreenTransition = false
         sessionWindow?.makeFirstResponder(model.surface); model.surface?.reportGeometry()
+        model.resumeWindowsInput()
     }
     func windowWillExitFullScreen(_ notification: Notification) {
         guard notification.object as? NSWindow === sessionWindow else { return }
@@ -120,12 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard notification.object as? NSWindow === sessionWindow else { return }
         model.isFullScreen = false; model.fullScreenTransition = false
         sessionWindow?.makeFirstResponder(model.surface); model.surface?.reportGeometry()
+        model.resumeWindowsInput()
     }
     func windowDidFailToEnterFullScreen(_ window: NSWindow) { model.fullScreenTransition = false }
     func windowDidFailToExitFullScreen(_ window: NSWindow) { model.fullScreenTransition = false }
-    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
-        proposedOptions.subtracting([.disableProcessSwitching, .disableForceQuit, .disableSessionTermination])
-    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showMain(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

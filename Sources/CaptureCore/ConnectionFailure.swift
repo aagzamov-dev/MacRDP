@@ -1,6 +1,10 @@
 import Foundation
 
 public enum ConnectionFailure {
+    public static func retryDelay(code: UInt32, attempt: Int) -> Double? {
+        guard [UInt32(0x20004), 0x20005, 0x20006, 0x2000d].contains(code), (0..<5).contains(attempt) else { return nil }
+        return Double(min(30, 1 << (attempt + 1)))
+    }
     public static func message(_ code: UInt32) -> String {
         guard code != 0 else { return "The remote PC ended the connection." }
         let reason: String
