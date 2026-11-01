@@ -11,6 +11,7 @@ for source in Sources/MacRDP/*.swift; do
     if [[ "$source" != *MacRDPApp.swift ]]; then native_sources+=("$source"); fi
 done
 xcrun swiftc -swift-version 6 -disable-sandbox -module-cache-path build/swift-module-cache \
+    -plugin-path "$(xcode-select -p)/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins" \
     -import-objc-header Sources/RDPBridge/MacRDP-Bridging-Header.h \
     Sources/CaptureCore/*.swift "${native_sources[@]}" build/bridge.o \
     -F Vendor/Sparkle -framework Sparkle -Xlinker -rpath -Xlinker "$project_dir/Vendor/Sparkle" \
