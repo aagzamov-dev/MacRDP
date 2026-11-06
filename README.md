@@ -8,7 +8,7 @@
 
 MacRDP brings saved PCs, Retina display support, and configurable keyboard controls to a SwiftUI/AppKit interface powered by FreeRDP 3. Switch control between Mac and Windows without disconnecting, work in full screen, and keep your Windows passwords in macOS Keychain.
 
-**Current app target:** Apple Silicon · macOS 27.0 or later · one remote session and one monitor at a time.
+**Current app target:** Apple Silicon · macOS 27.0 or later · multiple PC sessions in separate windows, one monitor per session.
 
 [Get started](#get-started) · [Features](#features) · [Keyboard and session controls](#keyboard-and-session-controls) · [Build from source](#build-from-source) · [Verification](#verification)
 
@@ -20,8 +20,12 @@ MacRDP brings saved PCs, Retina display support, and configurable keyboard contr
 | Secure sign-in | Optionally remember Windows passwords in Keychain. Protect access to the app with a 4–12 digit PIN. |
 | Retina display | Request a desktop at the view’s backing resolution, choose Windows UI scaling, and resize dynamically when the server supports it. |
 | Full screen | Open Windows in a dedicated session window with compact controls and a Mac/Windows input toggle. |
+| Multiple PCs | Keep several PCs connected at once, with independent windows, input, login and reconnect state. |
 | Keyboard and mouse | Send typing, clicks, dragging, and scrolling. Customize the input-toggle shortcut and Command, Control, Option, and Shift mappings. |
 | Familiar copy and paste keys | Use the **Command copies & pastes** preset to send Command as Windows Ctrl. This remaps keys; it does not synchronize the Mac and Windows clipboards. |
+| Text clipboard | Import Windows text to Mac, or press Command+V in Mac mode to paste Mac text into the focused PC. Per-PC permissions apply. |
+| Speakers and microphone | Play Windows sound on the Mac and redirect the Mac microphone. Both default on; macOS microphone permission is requested when connecting. |
+| Controls placement | Choose an app default, then override it for individual PCs from their editor or live session controls. |
 | Windows desktop navigation | Use Previous/Next desktop buttons or configurable three-/four-finger gestures. Gesture delivery depends on macOS settings. |
 | Menu-bar access | Show the app or session, connect to a saved PC, switch input control, disconnect, lock, and open Settings. |
 | Certificate verification | Review an untrusted PC’s certificate and fingerprint, then trust it once or remember that specific host. Changed fingerprints require a new decision. |
@@ -55,6 +59,11 @@ You need a reachable Windows PC with Remote Desktop enabled and a Windows accoun
 5. **Connect.** Select the saved PC and choose **Connect**. If its certificate cannot be verified automatically, check its fingerprint before choosing to trust it.
 6. **Switch control when needed.** Press **Control + Option + Command + G** (**⌃⌥⌘G**) or use the session’s Mac/Windows control.
 
+Speaker playback and microphone sharing default to enabled. Existing PCs are enabled once
+after upgrading; later per-PC opt-outs are preserved. Adjust either option in the PC's
+Advanced settings and reconnect. If microphone permission is denied, enable it in macOS
+Privacy & Security or turn microphone sharing off for that PC before reconnecting.
+
 Packaged builds bundle the native libraries. The app is locally signed and **not notarized**; macOS may require first-launch approval in Privacy & Security. Packaging and signing details are in the [release guide](docs/RELEASING.md).
 
 ## Keyboard and session controls
@@ -74,9 +83,9 @@ Change these individually in **Settings → Keyboard**, or choose **Command copi
 
 | Action | What happens to the session |
 | --- | --- |
-| Switch to Mac input | Releases remote input; the connection and full screen stay open. |
+| Switch to Mac input | Releases exclusive shortcuts while ordinary typing, clicking and scrolling remain available in Windows. Command+V pastes Mac text; Mac system shortcuts stay local. |
 | Switch to another app or Mac desktop | Releases input temporarily. Returning to the session restores the preferred Windows mode when eligible. Explicit Mac mode stays selected. |
-| Lock MacRDP | Releases input and hides access behind the PIN; an established connection stays open. |
+| Lock MacRDP | Releases input and hides access behind the PIN. Microphone-enabled sessions disconnect to stop capture; other established sessions stay open. |
 | Close the main PC-list window | Hides the workspace to the menu bar. |
 | Close the Windows session window or choose Disconnect | Ends the RDP connection and returns to the workspace. |
 | Quit MacRDP | Releases input and ends the connection. |
@@ -85,10 +94,10 @@ Three-finger gestures default to switching Windows desktops; four-finger gesture
 
 ## Current limitations
 
-- **Scope:** one session and one remote monitor. Clipboard synchronization, audio, RD Gateway, RemoteApp, and device/file redirection are not implemented.
+- **Scope:** one remote monitor per session. Text clipboard and audio are supported; clipboard files/images, RD Gateway, RemoteApp, and device/file redirection remain outside the current scope.
 - **Compatibility:** the current native app and bundled libraries require Apple Silicon and macOS 27.0+. The standalone Swift core’s macOS 14 target does not imply app support for older systems.
-- **Manual acceptance:** physical system-shortcut capture, trackpad routing, and real-Windows Retina sharpness, scaling, and pointer alignment still need verification on the target hardware.
-- **Performance:** the current Homebrew FreeRDP build uses software decoding. Hardware decoding and performance parity with Microsoft Windows App have not been established.
+- **Manual acceptance:** the tester confirmed that the corrected 0.3.19 connection sequence and desktop size work on their Windows host. Broad physical shortcut/trackpad coverage, audio interoperability and call quality still need manual verification.
+- **Performance:** packaged releases prefer VideoToolbox H.264 decoding with software fallback. Synthetic hardware/software decoding is verified; performance parity with Microsoft Windows App has not been established.
 - **Updates:** signed update handling is implemented; a complete live replacement and relaunch between published versions remains a manual acceptance check.
 
 ## Build from source
@@ -127,6 +136,7 @@ Run the checks relevant to your change:
 ./scripts/test-input-queue.sh   # Input ordering and release cleanup
 ./scripts/test-native.sh        # Native UI and app lifecycle
 ./scripts/test-rdp.sh           # Localhost RDP integration
+bash scripts/test-audio.sh     # Native audio addins and PCM formats (patched dependencies)
 ```
 
 The RDP suite uses a temporary local FreeRDP peer, disposable certificates, and synthetic credentials. It covers TLS/NLA authentication, certificate rejection and pinning, desktop pixels, dynamic resize, keyboard/mouse delivery, and held-input cleanup. It does not establish successful login or visual quality on a real Windows PC. Restricted environments may require permission to bind a localhost socket.

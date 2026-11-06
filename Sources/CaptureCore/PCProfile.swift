@@ -35,7 +35,9 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
     public var lastConnected: Date?
     public var resolution = DesktopResolution.dynamic
     public var viewMode = DesktopViewMode.fit
-    public var audioPlayback = false
+    public var sessionControlsPosition: SessionControlsPosition?
+    public var audioPlayback = true
+    public var microphoneCapture = true
     public var reconnectAutomatically = true
     public var textInputMode = TextInputMode.physical
     public var modifierMapping: ModifierMapping?
@@ -59,7 +61,7 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, domain, rememberPassword, optimizeRetina, desktopScale, openFullScreen
         case useVPN, vpnServiceID
-        case favorite, lastConnected, resolution, viewMode, audioPlayback, reconnectAutomatically, textInputMode, modifierMapping, clipboardSharing, allowMacPaste
+        case favorite, lastConnected, resolution, viewMode, sessionControlsPosition, audioPlayback, microphoneCapture, reconnectAutomatically, textInputMode, modifierMapping, clipboardSharing, allowMacPaste
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -77,7 +79,11 @@ public struct PCProfile: Codable, Equatable, Identifiable, Sendable {
         lastConnected = try c.decodeIfPresent(Date.self, forKey: .lastConnected)
         resolution = try c.decodeIfPresent(DesktopResolution.self, forKey: .resolution) ?? .dynamic
         viewMode = try c.decodeIfPresent(DesktopViewMode.self, forKey: .viewMode) ?? .fit
-        audioPlayback = try c.decodeIfPresent(Bool.self, forKey: .audioPlayback) ?? false
+        if let rawPosition = try c.decodeIfPresent(String.self, forKey: .sessionControlsPosition) {
+            sessionControlsPosition = SessionControlsPosition(rawValue: rawPosition)
+        }
+        audioPlayback = try c.decodeIfPresent(Bool.self, forKey: .audioPlayback) ?? true
+        microphoneCapture = try c.decodeIfPresent(Bool.self, forKey: .microphoneCapture) ?? true
         reconnectAutomatically = try c.decodeIfPresent(Bool.self, forKey: .reconnectAutomatically) ?? true
         textInputMode = try c.decodeIfPresent(TextInputMode.self, forKey: .textInputMode) ?? .physical
         modifierMapping = try c.decodeIfPresent(ModifierMapping.self, forKey: .modifierMapping)
@@ -99,6 +105,17 @@ public struct PCStore {
             return [pc]
         }
         return []
+    }
+    public func loadWithAudioDefaultsMigration() throws -> [PCProfile] {
+        var profiles = try load()
+        guard !defaults.bool(forKey: "enabledAudioDefaultsV1") else { return profiles }
+        for index in profiles.indices {
+            profiles[index].audioPlayback = true
+            profiles[index].microphoneCapture = true
+        }
+        try save(profiles)
+        defaults.set(true, forKey: "enabledAudioDefaultsV1")
+        return profiles
     }
     public func save(_ profiles: [PCProfile]) throws {
         defaults.set(try JSONEncoder().encode(profiles), forKey: "pcs")

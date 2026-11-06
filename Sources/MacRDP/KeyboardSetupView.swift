@@ -25,7 +25,7 @@ struct KeyboardSetupView: View {
                         HStack {
                             Text("Already enabled, but still not working?").font(.caption).foregroundStyle(.secondary)
                             Button(model.restarting ? "Restarting…" : "Restart MacRDP") {
-                                if model.sessionRunning { confirmRestart = true }
+                                if (model.workspace?.hasRunningSessions ?? model.hasRunningSessions) { confirmRestart = true }
                                 else { Task { await model.restartApp() } }
                             }.disabled(model.restarting)
                         }
@@ -51,13 +51,13 @@ struct KeyboardSetupView: View {
                         step("3. Test Windows control", done: model.captureValidated)
                         Text(model.captureValidated ? "Setup saved. Windows control can start automatically when you return to your session." : "The test opens your Windows desktop. Press \(model.shortcut.displayName) within 10 seconds to confirm you can return to Mac. Otherwise control releases automatically.")
                             .font(.callout).foregroundStyle(.secondary)
-                        if model.phase != .connected {
+                        if !model.hasConnectedSession {
                             Text("Connect to a PC first, then return to Keyboard setup.").font(.caption)
                         }
                         if let issue = model.captureIssue { Text(issue).font(.caption).foregroundStyle(.orange) }
                         Button(model.captureValidated ? "Use Windows control" : "Start 10-second test") { model.testWindowsControl() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(!model.accessibilityGranted || !model.releaseVerified || model.phase != .connected || model.restarting)
+                            .disabled(!model.accessibilityGranted || !model.releaseVerified || !model.hasConnectedSession || model.restarting)
                     }
                     Divider()
                     Text(model.modifierMapping.summary + "\n" + model.modifierMapping.copyPasteHint)

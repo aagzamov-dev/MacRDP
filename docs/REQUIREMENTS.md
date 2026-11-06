@@ -8,9 +8,9 @@ Build a simple native macOS RDP client that connects to an existing Windows RDP 
 
 The user prioritizes Command+Tab behaving as Windows Win+Tab, reliable exit, native appearance, and responsiveness comparable to Windows App. A small functioning client is more valuable than a broad unfinished clone. The current preparation delivers installed libraries, checks, and this handoff. No working custom app or keyboard-capture result is implied.
 
-First release scope: Apple Silicon, one session at a time, one monitor, direct RDP over the existing VPN, native connection form, full screen, keyboard and pointer input, required Retina rendering with Windows UI scaling, dynamic resolution, clear disconnect/errors, and optional text clipboard after the core input milestone. Start on the installed OS; choose a minimum supported macOS version only after checking the library deployment targets.
+Current scope: Apple Silicon, multiple simultaneous PCs with a separate window and one monitor per session, direct RDP over the existing VPN, native connection form, full screen, keyboard and pointer input, required Retina rendering with Windows UI scaling, dynamic resolution, clear disconnect/errors, and text clipboard. Opening an already active PC brings its existing session window forward. Start on the installed OS; choose a minimum supported macOS version only after checking the library deployment targets.
 
-Defer accounts/cloud sync, gateways, RemoteApp, multi-monitor, file transfer, drive/USB/printer/smart-card redirection, microphones/cameras, iOS/Windows clients, and elaborate visual themes. Add audio playback after input and display are stable. Do not implement an RDP server or a new VPN.
+Audio playback on Mac and Mac microphone redirection default to enabled, with per-PC opt-outs. Existing PCs are enabled once on upgrade, as requested; later opt-outs persist. Request macOS microphone access only for a microphone-enabled PC, before connecting; denied/restricted access must provide recovery guidance. Disconnect microphone-enabled sessions on app lock or system sleep/lock to stop recording; normal focus switching preserves them. Defer accounts/cloud sync, gateways, RemoteApp, multi-monitor, file transfer, drive/USB/printer/smart-card redirection, cameras, iOS/Windows clients, and elaborate visual themes. Do not implement an RDP server or a new VPN.
 
 ## 2. Known user environment
 
@@ -79,6 +79,13 @@ The shortcut toggles keyboard ownership without hiding, minimizing, closing, dis
 The release key's modifier prefixes may already have been sent before G completes the chord. Send corresponding remote key-ups and never send the G down/up as a remote action. Wait for the locally held release keys to be lifted before allowing capture again. Do not synthesize those keys into another Mac app.
 
 ### Capture state and lifecycle
+
+Mac mode releases exclusive shortcut capture and held remote keys/buttons, then
+allows ordinary keyboard and pointer input while the remote surface owns focus.
+Command shortcuts and macOS desktop navigation remain local. Command+V explicitly
+pastes Mac clipboard text into the focused session when that PC allows it, without
+switching input mode. Local controls, dialogs, focus loss and application lock still
+suspend all remote input. Session state, windows and held input are independent per PC.
 
 Represent ownership explicitly: **local**, **arming**, **captured**, **releasing**. Connection state is separate. Capture only when the connection is ready, the session surface is key/frontmost, no local modal/text field owns focus, required permissions are usable, and release handling is armed. New sessions prefer Windows mode. First-use permission/release verification remains required before exclusive capture; verified sessions may automatically capture on entering full screen or returning to the remote Space.
 

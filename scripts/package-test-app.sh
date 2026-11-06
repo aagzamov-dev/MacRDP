@@ -9,11 +9,24 @@ bundle_id="uz.macrdp.test"
 identity_folder="test-identity"
 output="$project_dir/build/macrdp-test-$version"
 extra_build_args=()
-if [[ "${2:-}" == hardware ]]; then
-    app_name="MacRDP Hardware Test"
-    bundle_id="uz.macrdp.hardwaretest"
-    identity_folder="hardware-test-identity"
-    output="$project_dir/build/macrdp-hardware-test-$version"
+shared_data=false
+if [[ "${2:-}" == shared-data ]]; then
+    app_name="MACRDP TEST"
+    bundle_id="uz.macrdp.testshared"
+    identity_folder="shared-test-identity"
+    output="$project_dir/build/macrdp-shared-test-$version"
+    shared_data=true
+fi
+if [[ "${2:-}" == hardware || "${2:-}" == shared-data ]]; then
+    if [[ "$shared_data" == false ]]; then
+        app_name="MacRDP Hardware Test"
+        bundle_id="uz.macrdp.hardwaretest"
+        identity_folder="hardware-test-identity"
+        output="$project_dir/build/macrdp-hardware-test-$version"
+    fi
+    if [[ "$shared_data" == true ]]; then
+        bash scripts/build-hardware-dependencies.sh
+    fi
     prefix="$project_dir/build/hardware-decoding/install"
     [[ -f "$prefix/lib/libfreerdp3.dylib" ]] || { echo 'Build hardware dependencies first'; exit 1; }
     extra_build_args+=("LIBRARY_SEARCH_PATHS=$prefix/lib /opt/homebrew/lib"
@@ -28,10 +41,11 @@ identity="$(./scripts/signing-identity.sh)"
 mkdir -p "build/$identity_folder" build/swift-module-cache
 variant_source="$(mktemp -d "$project_dir/build/$identity_folder/source.XXXXXX")"
 trap 'rm -rf -- "$variant_source"' EXIT
-python3 - "$project_dir" "$variant_source" "$app_name" "$bundle_id" <<'PY'
+python3 - "$project_dir" "$variant_source" "$app_name" "$bundle_id" "$shared_data" <<'PY'
 import pathlib, plistlib, shutil, sys
 root, variant = map(pathlib.Path, sys.argv[1:3])
 app_name, bundle_id = sys.argv[3:5]
+shared_data = sys.argv[5] == 'true'
 for folder in ('Sources', 'Resources', 'MacRDP.xcodeproj'):
     shutil.copytree(root / folder, variant / folder)
 (variant / 'Vendor').symlink_to(root / 'Vendor', target_is_directory=True)
@@ -39,7 +53,8 @@ for folder in ('Sources', 'Resources', 'MacRDP.xcodeproj'):
 helper = (root / 'Tools/KeychainHelper/main.swift').read_text()
 assert 'uz.macrdp.app' in helper and 'let store = KeychainStore()' in helper
 helper = helper.replace('uz.macrdp.app', bundle_id)
-helper = helper.replace('let store = KeychainStore()', f'let store = KeychainStore(service: "{bundle_id}.credentials")')
+if not shared_data:
+    helper = helper.replace('let store = KeychainStore()', f'let store = KeychainStore(service: "{bundle_id}.credentials")')
 (variant / 'Helper/main.swift').write_text(helper)
 store = variant / 'Sources/MacRDP/HelperSecretStore.swift'
 source = store.read_text()
@@ -58,6 +73,30 @@ source = source[:a] + '''    func start() {
 updater.write_text(source)
 app_delegate = variant / 'Sources/MacRDP/AppDelegate.swift'
 app_delegate.write_text(app_delegate.read_text().replace('"MacRDP"', f'"{app_name}"').replace('"Open MacRDP"', f'"Open {app_name}"'))
+if shared_data:
+    app_entry = variant / 'Sources/MacRDP/MacRDPApp.swift'
+    source = app_entry.read_text()
+    marker = 'struct MacRDPApp: App {'
+    assert marker in source
+    source = source.replace(marker, marker + '''
+    private static let originalSettings: Void = {
+        var settings = UserDefaults.standard.persistentDomain(forName: "uz.macrdp.app") ?? [:]
+        // Capture release verification belongs to this app identity and permission entry.
+        settings.removeValue(forKey: "verifiedCaptureShortcut")
+        settings.removeValue(forKey: "enabledAudioDefaultsV1")
+        UserDefaults.standard.register(defaults: settings)
+    }()
+''')
+    # Register before AppDelegate creates the workspace and reads its preferences.
+    delegate_marker = '@NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate'
+    assert delegate_marker in source
+    source = source.replace(delegate_marker,
+        '''@NSApplicationDelegateAdaptor private var delegate: AppDelegate
+    init() {
+        _ = Self.originalSettings
+        _delegate = NSApplicationDelegateAdaptor(AppDelegate.self)
+    }''')
+    app_entry.write_text(source)
 info_file = variant / 'Resources/Info.plist'
 info = plistlib.loads(info_file.read_bytes())
 info['CFBundleName'] = app_name

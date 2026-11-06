@@ -73,6 +73,7 @@ if extra_prefix:
         if (source / name).exists():
             shutil.copy2(source / name, custom_license / name)
     shutil.copy2('patches/freerdp-3.32.2-videotoolbox.patch', custom_license)
+    shutil.copy2('patches/freerdp-3.32.2-mac-audio-input.patch', custom_license)
 sparkle_license = pathlib.Path('Vendor/Sparkle/LICENSE')
 if sparkle_license.exists():
     shutil.copy2(sparkle_license, licenses / 'Sparkle-LICENSE')

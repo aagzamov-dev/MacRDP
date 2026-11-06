@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 @MainActor
@@ -67,7 +68,7 @@ await MainActor.run {
     let suite = "uz.macrdp.tests.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
-    var pc = PCProfile(); pc.name = "Office Windows"; pc.host = "office.example"; pc.username = "Test account"
+    var pc = PCProfile(); pc.microphoneCapture = false; pc.name = "Office Windows"; pc.host = "office.example"; pc.username = "Test account"
     try! PCStore(defaults: defaults).save([pc])
     let model = AppModel(defaults: defaults)
     let unavailableTap = KeyboardTap { _ in }
@@ -181,9 +182,9 @@ await MainActor.run {
         let menu = NSMenu()
         delegate.menuWillOpen(menu)
         precondition(sessionModel.menuOpen && !sessionModel.remoteInput)
-        precondition(menu.items.contains { $0.title == "Show Windows" })
-        precondition(menu.items.contains { $0.title == "Disconnect" })
-        precondition(menu.items.contains { $0.title == "Windows control" && $0.state == .off })
+        precondition(menu.items.contains { $0.title.hasPrefix("Show Office Windows ·") })
+        precondition(menu.items.contains { $0.title.hasPrefix("Disconnect Office Windows") })
+        precondition(menu.items.contains { $0.title.hasPrefix("Windows control · Office Windows") && $0.state == .off })
         precondition(menu.items.contains { $0.title == "Quit MacRDP" })
         delegate.menuDidClose(menu)
         precondition(!sessionModel.menuOpen)
@@ -282,7 +283,7 @@ func verifyPCManagement() async throws {
     precondition(!model.rehearsing && !model.remoteInput)
     model.saveSettings(shortcut: model.shortcut, three: model.threeFinger, four: model.fourFinger, exclusive: true, mapping: .macCopyPaste)
     precondition(model.modifierMapping == .macCopyPaste && !model.remoteInput)
-    var pc = PCProfile(); pc.host = "fixture.invalid"; pc.username = "fixture"
+    var pc = PCProfile(); pc.microphoneCapture = false; pc.host = "fixture.invalid"; pc.username = "fixture"
     let added = await model.savePC(pc, password: "synthetic-fixture-password"); precondition(added)
     let account = "pc-\(pc.id.uuidString)"
     precondition(try! secrets.read(account) == Data("synthetic-fixture-password".utf8))
@@ -518,3 +519,234 @@ await MainActor.run {
     precondition(model.sleepActivity == nil)
     print("PASS keep-awake default, persistence, live settings, focus preservation, failure/disconnect cleanup, reconnect and shutdown guards.")
 }
+
+@MainActor
+func verifyMultipleSessionOwnership() async throws {
+    let suite = "MacRDP.native-multiple.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let owner = AppModel(defaults: defaults, secretStore: TestSecrets(),
+                         keyboardAccess: KeyboardAccess(isTrusted: { false }, request: {}, openSettings: { false }))
+    owner.start()
+    while owner.loading { try await Task.sleep(for: .milliseconds(10)) }
+    owner.unlock(pin: "7314", confirmation: "7314")
+    while owner.loading { try await Task.sleep(for: .milliseconds(10)) }
+    var first = PCProfile(); first.microphoneCapture = false; first.name = "First"; first.host = "first.invalid"; first.username = "fixture"
+    var second = PCProfile(); second.microphoneCapture = false; second.name = "Second"; second.host = "second.invalid"; second.username = "fixture"
+    let savedFirst = await owner.savePC(first, password: "synthetic"); precondition(savedFirst)
+    let savedSecond = await owner.savePC(second, password: "synthetic"); precondition(savedSecond)
+    let a = owner.makeSession(for: first)
+    let b = owner.makeSession(for: second)
+    precondition(a !== b && a.workspace === owner && b.workspace === owner)
+    precondition(owner.makeSession(for: first) === a && owner.sessions.count == 2)
+    owner.sessionCreated = { _ in }
+    owner.connect(first, askCredentials: true)
+    owner.connect(second, askCredentials: true)
+    precondition(a.credentialPrompt?.id == first.id && b.credentialPrompt?.id == second.id)
+    a.credentialPrompt = nil; b.credentialPrompt = nil
+    a.phase = .connected; b.phase = .connected
+    precondition(owner.hasRunningSessions && owner.hasConnectedSession)
+    a.releaseButton(); b.useWindowsInput()
+    precondition(a.inputMode == .mac && b.inputMode == .windows && !a.capture)
+    a.readClipboard = { "synthetic Mac clipboard text" }
+    a.pasteMacText()
+    precondition(a.inputMode == .mac && a.pendingPaste == "synthetic Mac clipboard text" && !a.capture)
+    a.suspendInput(reason: "Focus changed before paste")
+    precondition(a.pendingPaste == nil && a.inputMode == .mac)
+    owner.toggleFavorite(first)
+    precondition(a.activePC?.favorite == true)
+    owner.saveSettings(shortcut: owner.shortcut, three: owner.threeFinger, four: owner.fourFinger,
+                       exclusive: false, controlsPosition: .bottomLeft)
+    precondition(a.effectiveSessionControlsPosition == .bottomLeft && b.effectiveSessionControlsPosition == .bottomLeft)
+    a.setSessionControlsPosition(.topRight)
+    b.setSessionControlsPosition(.bottomRight)
+    owner.saveSettings(shortcut: owner.shortcut, three: owner.threeFinger, four: owner.fourFinger,
+                       exclusive: false, controlsPosition: .topCenter)
+    precondition(a.effectiveSessionControlsPosition == .topRight && b.effectiveSessionControlsPosition == .bottomRight)
+    precondition(owner.pcs.first { $0.id == first.id }?.favorite == true)
+    a.setSessionControlsPosition(nil)
+    precondition(a.effectiveSessionControlsPosition == .topCenter && b.effectiveSessionControlsPosition == .bottomRight)
+    let reopenedOwner = AppModel(defaults: defaults, secretStore: TestSecrets())
+    precondition(reopenedOwner.pcs.first { $0.id == first.id }?.sessionControlsPosition == nil)
+    precondition(reopenedOwner.pcs.first { $0.id == second.id }?.sessionControlsPosition == .bottomRight)
+    reopenedOwner.shutdown()
+    print("PASS per-PC control placement, persisted independent overrides, live global fallback after clearing, and preservation of unrelated profile edits.")
+    a.setDisplay(mode: .actual)
+    precondition(owner.pcs.first { $0.id == first.id }?.favorite == true)
+    precondition(owner.pcs.count == 2 && b.activePC?.id == second.id)
+    var macClipboardWrites = 0
+    a.writeClipboard = { _ in macClipboardWrites += 1 }
+    a.receiveClipboard("background remote text", generation: 2)
+    precondition(macClipboardWrites == 0)
+    var installations = 0
+    owner.updater.sessionIsActive = { [weak owner] in owner?.hasRunningSessions == true }
+    precondition(owner.updater.postponeInstallation { installations += 1 })
+    a.disconnect()
+    precondition(a.phase == .disconnected && b.phase == .connected && owner.hasRunningSessions && installations == 0)
+    let reconnected = await a.submitCredentials(first, password: "synthetic")
+    precondition(reconnected && a.phase == .connecting && a.showSession)
+    a.handle(.state(.connected, 0))
+    a.handle(.state(.disconnected, 0))
+    precondition(a.showSession && b.phase == .connected)
+    a.disconnect()
+    b.releaseButton()
+    precondition(b.buttonVerified && owner.buttonVerified && a.buttonVerified)
+    owner.lockApp()
+    precondition(!owner.unlocked && !a.unlocked && !b.unlocked)
+    precondition(b.phase == .connected && !b.capture && !b.remoteInput)
+    owner.prepareForTermination()
+    precondition(a.sleepActivity == nil && b.sleepActivity == nil)
+    print("PASS separate session ownership, duplicate-open routing, Mac paste mode/focus cancellation, authoritative profile writes, background clipboard guard, aggregate updater and lock/quit cleanup.")
+}
+try await verifyMultipleSessionOwnership()
+
+@MainActor
+func verifyMicrophonePermission() async throws {
+    let suite = "MacRDP.native-microphone.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let secrets = TestSecrets()
+    var statusChecks = 0
+    var permissionRequests = 0
+    var status = AVAuthorizationStatus.notDetermined
+    var completion: CheckedContinuation<Bool, Never>?
+    let access = MicrophoneAccess(authorizationStatus: { statusChecks += 1; return status }, request: {
+        permissionRequests += 1
+        return await withCheckedContinuation { completion = $0 }
+    })
+    let owner = AppModel(defaults: defaults, secretStore: secrets, microphoneAccess: access)
+    owner.start()
+    while owner.loading { try await Task.sleep(for: .milliseconds(10)) }
+    precondition(statusChecks == 0 && permissionRequests == 0)
+    owner.unlock(pin: "9137", confirmation: "9137")
+    while owner.loading { try await Task.sleep(for: .milliseconds(10)) }
+    var pc = PCProfile(); pc.microphoneCapture = false; pc.host = "fixture.invalid"; pc.username = "fixture"
+    let noMic = owner.makeSession(for: pc)
+    let ordinary = await noMic.submitCredentials(pc, password: "synthetic")
+    precondition(ordinary)
+    await Task.yield()
+    precondition(statusChecks == 0 && permissionRequests == 0)
+    noMic.disconnect()
+
+    pc.microphoneCapture = true
+    let pending = await noMic.submitCredentials(pc, password: "synthetic")
+    precondition(pending)
+    while completion == nil { try await Task.sleep(for: .milliseconds(1)) }
+    precondition(permissionRequests == 1 && noMic.phase == .connecting && noMic.transport == nil)
+    noMic.disconnect()
+    completion?.resume(returning: true); completion = nil
+    await Task.yield()
+    precondition(noMic.phase == .disconnected && noMic.transport == nil)
+
+    for deniedStatus in [AVAuthorizationStatus.denied, .restricted] {
+        status = deniedStatus
+        let denied = await noMic.submitCredentials(pc, password: "synthetic")
+        precondition(denied)
+        while noMic.phase == .connecting { try await Task.sleep(for: .milliseconds(1)) }
+        precondition(noMic.phase == .failed && noMic.transport == nil && permissionRequests == 1)
+        precondition(noMic.connectionError?.contains("System Settings") == true)
+        precondition(owner.pcs.first { $0.id == pc.id }?.microphoneCapture == true)
+    }
+
+    status = .authorized
+    let authorized = await noMic.submitCredentials(pc, password: "synthetic")
+    precondition(authorized)
+    while noMic.vpnStatus != nil { try await Task.sleep(for: .milliseconds(1)) }
+    noMic.phase = .connected
+    var edited = pc; edited.microphoneCapture = false
+    owner.persistProfile(edited)
+    precondition(noMic.activePC?.microphoneCapture == false)
+    owner.lockApp()
+    precondition(noMic.phase == .disconnected && !noMic.unlocked)
+    while owner.loading { try await Task.sleep(for: .milliseconds(1)) }
+    owner.unlock(pin: "9137", confirmation: "")
+    while owner.loading { try await Task.sleep(for: .milliseconds(1)) }
+
+    status = .notDetermined
+    let waitingOnLock = await noMic.submitCredentials(pc, password: "synthetic")
+    precondition(waitingOnLock)
+    while completion == nil { try await Task.sleep(for: .milliseconds(1)) }
+    owner.lockApp()
+    completion?.resume(returning: true); completion = nil
+    await Task.yield()
+    precondition(noMic.phase == .disconnected && !noMic.unlocked && noMic.transport == nil)
+    while owner.loading { try await Task.sleep(for: .milliseconds(1)) }
+    owner.unlock(pin: "9137", confirmation: "")
+    while owner.loading { try await Task.sleep(for: .milliseconds(1)) }
+    let waitingOnQuit = await noMic.submitCredentials(pc, password: "synthetic")
+    precondition(waitingOnQuit)
+    while completion == nil { try await Task.sleep(for: .milliseconds(1)) }
+    owner.prepareForTermination()
+    completion?.resume(returning: true); completion = nil
+    await Task.yield()
+    precondition(noMic.transport == nil && !noMic.remoteInput)
+    print("PASS microphone opt-in, inherited injected permission, request timing, denial/restriction recovery, stale approval after disconnect/lock/quit, and actual microphone-session lock cleanup after profile edit. No microphone accessed.")
+}
+try await verifyMicrophonePermission()
+
+@MainActor
+func verifyStartupGeometryDelivery() async throws {
+    let suite = "MacRDP.native-geometry.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(defaults: defaults, secretStore: TestSecrets())
+    var pc = PCProfile(); pc.microphoneCapture = false; pc.host = "fixture.invalid"
+    model.unlocked = true; model.activePC = pc; model.phase = .authenticating; model.showSession = true
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+                          styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let view = RemoteDesktopView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
+    view.model = model; model.surface = view; model.window = window; window.contentView = view
+    view.reportGeometry()
+    precondition(view.lastLayout == nil)
+    let first = DisplayLayout(points: CGSize(width: 1200, height: 800), backing: CGSize(width: 2400, height: 1600), retina: true, scale: 0)
+    let final = DisplayLayout(points: CGSize(width: 1512, height: 982), backing: CGSize(width: 3024, height: 1964), retina: true, scale: 0)
+    model.fullScreenTransition = true
+    precondition(!model.geometry(first) && !model.geometry(final))
+    precondition(model.transport == nil)
+    let delegate = AppDelegate(model: model)
+    delegate.windowDidFailToEnterFullScreen(window)
+    precondition(!model.fullScreenTransition && view.lastLayout == nil)
+    let transport = RDPTransport { _ in }
+    precondition(transport.resize(first))
+    precondition(transport.resize(final))
+    precondition(transport.queuedDisplayLayout == final)
+    transport.cancel()
+    precondition(transport.queuedDisplayLayout == nil && !transport.resize(first))
+    model.shutdown(); view.stop()
+    print("PASS unaccepted authentication geometry is not cached, failed fullscreen releases its gate synchronously, and pre-handle resize keeps newest Retina layout and clears on cancel. No RDP connection attempted.")
+}
+try await verifyStartupGeometryDelivery()
+
+@MainActor
+func verifyReplacedSurfaceFullScreenCompletion() async throws {
+    let suite = "MacRDP.native-replaced-surface.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(defaults: defaults, secretStore: TestSecrets())
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let first = RemoteDesktopView(frame: window.contentLayoutRect)
+    first.model = model; model.window = window; model.surface = first; window.contentView = first
+    let delegate = AppDelegate(model: model)
+    let replacement = RemoteDesktopView(frame: window.contentLayoutRect)
+    replacement.model = model; model.surface = replacement; window.contentView = replacement
+    model.fullScreenTransition = true
+    delegate.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification, object: window))
+    precondition(!model.fullScreenTransition && model.isFullScreen)
+    window.contentView = first; model.surface = first
+    precondition(first.window === window)
+    model.fullScreenTransition = true
+    delegate.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
+    precondition(!model.fullScreenTransition && !model.isFullScreen)
+    model.fullScreenTransition = true
+    window.contentView = replacement; model.surface = replacement
+    delegate.windowDidFailToEnterFullScreen(window)
+    precondition(!model.fullScreenTransition)
+    model.fullScreenTransition = true
+    delegate.windowDidFailToExitFullScreen(window)
+    precondition(!model.fullScreenTransition)
+    first.stop(); replacement.stop(); model.shutdown()
+    print("PASS fullscreen enter/exit/failure complete synchronously across real native surface replacement and reattachment; connection startup no longer waits for a view-owned completion.")
+}
+try await verifyReplacedSurfaceFullScreenCompletion()

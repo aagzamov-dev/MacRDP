@@ -8,7 +8,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     override init() { model = AppModel(); super.init() }
     init(model: AppModel) { self.model = model; super.init() }
     private var mainWindow: NSWindow?
-    private var sessionWindow: NSWindow?
+    private var sessionWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var focusedSession: AppModel { model.sessions.first { $0.window?.isKeyWindow == true } ?? model.sessions.last { $0.sessionRunning } ?? model }
+    private func sessionModel(for window: NSWindow?) -> AppModel? {
+        ([model] + model.sessions).first { $0.window === window && window != nil }
+    }
     private var statusItem: NSStatusItem?
     private var terminating = false
     private var subscriptions = Set<AnyCancellable>()
@@ -27,18 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.contentViewController = NSHostingController(rootView: ContentView(model: model))
         window.center(); window.setFrameAutosaveName("MacRDP Workspace"); mainWindow = window
         model.showMainWindow = { [weak self] in self?.showMain() }
-        model.closeSessionWindow = { [weak self] in self?.closeSession() }
-        model.showSessionWindow = { [weak self] in self?.showSession() }
+        configureSession(model)
+        model.sessionCreated = { [weak self] session in self?.configureSession(session) }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: "MacRDP")
         item.button?.toolTip = "MacRDP · connect and switch input"
         let menu = NSMenu(); menu.delegate = self; item.menu = menu; statusItem = item
         model.$unlocked.dropFirst().sink { [weak self] unlocked in
             guard !unlocked else { return }
-            DispatchQueue.main.async { self?.sessionWindow?.orderOut(nil); self?.showMain() }
+            DispatchQueue.main.async { self?.sessionWindows.values.forEach { $0.orderOut(nil) }; self?.showMain() }
         }.store(in: &subscriptions)
-        model.updater.sessionIsActive = { [weak model] in model?.sessionRunning == true }
-        model.updater.willShowUI = { [weak model] in model?.suspendInput(reason: "Software update") }
+        model.updater.sessionIsActive = { [weak model] in model?.hasRunningSessions == true }
+        model.updater.willShowUI = { [weak model] in model?.suspendAllInput(reason: "Software update") }
         model.updater.willInstall = { [weak model] in model?.dismissLocalDialogs() }
         model.updater.willRelaunch = { [weak self] in
             self?.model.prepareForTermination()
@@ -50,13 +54,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func showMain() {
         guard !terminating else { return }
-        model.suspendInput(reason: "MacRDP workspace")
+        model.suspendAllInput(reason: "MacRDP workspace")
         mainWindow?.deminiaturize(nil); mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    private func showSession() {
-        guard model.unlocked, model.activePC != nil else { showMain(); return }
-        if sessionWindow == nil {
+    private func configureSession(_ session: AppModel) {
+        session.showMainWindow = { [weak self] in self?.showMain() }
+        session.closeSessionWindow = { [weak self, weak session] in
+            guard let session else { return }; self?.closeSession(session)
+        }
+        session.showSessionWindow = { [weak self, weak session] in
+            guard let session else { return }; self?.showSession(session)
+        }
+    }
+    private func showSession(_ session: AppModel) {
+        guard session.unlocked, session.activePC != nil else { showMain(); return }
+        for other in model.sessions where other !== session { other.suspendInput(reason: "Another session selected") }
+        let key = ObjectIdentifier(session)
+        if sessionWindows[key] == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -64,22 +79,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             window.collectionBehavior = [.fullScreenPrimary]
             window.acceptsMouseMovedEvents = true
             window.delegate = self
-            window.contentViewController = NSHostingController(rootView: SessionWindowView(model: model))
-            window.center(); window.setFrameAutosaveName("MacRDP Session " + (model.activePC?.id.uuidString ?? "default")); sessionWindow = window
+            window.contentViewController = NSHostingController(rootView: SessionWindowView(model: session))
+            window.center(); window.setFrameAutosaveName("MacRDP Session " + (session.activePC?.id.uuidString ?? "default"))
+            sessionWindows[key] = window
         }
-        model.window = sessionWindow
-        sessionWindow?.title = model.activePC?.name ?? "Windows"
-        sessionWindow?.deminiaturize(nil); sessionWindow?.makeKeyAndOrderFront(nil)
+        let window = sessionWindows[key]
+        session.window = window
+        window?.title = session.activePC?.name ?? "Windows"
+        window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        sessionWindow?.makeFirstResponder(model.surface)
-        model.surface?.reportGeometry()
-        if model.isFullScreen { mainWindow?.orderOut(nil) }
+        window?.makeFirstResponder(session.surface)
+        session.surface?.reportGeometry()
+        if session.isFullScreen { mainWindow?.orderOut(nil) }
     }
     func closeSession(returnToMain: Bool = true) {
-        let window = sessionWindow ?? model.window
-        sessionWindow = nil
-        model.window = nil
-        model.isFullScreen = false; model.fullScreenTransition = false
+        for session in [model] + model.sessions { closeSession(session, returnToMain: false) }
+        if returnToMain { showMain() }
+    }
+    private func closeSession(_ session: AppModel, returnToMain: Bool = true) {
+        let window = sessionWindows.removeValue(forKey: ObjectIdentifier(session)) ?? session.window
+        session.window = nil
+        session.isFullScreen = false; session.fullScreenTransition = false
         window?.delegate = nil
         if let sheet = window?.attachedSheet { window?.endSheet(sheet) }
         window?.close()
@@ -87,44 +107,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     func showSettings() { model.openSettings() }
     func windowDidBecomeKey(_ notification: Notification) {
-        guard notification.object as? NSWindow === sessionWindow, model.unlocked,
-              sessionWindow?.attachedSheet == nil, !model.settings, !model.updates, !model.pinChange else { return }
-        sessionWindow?.makeFirstResponder(model.surface)
+        guard let session = sessionModel(for: notification.object as? NSWindow), session.unlocked,
+              session.window?.attachedSheet == nil, !session.settings, !session.keyboardSetup else { return }
+        for other in model.sessions where other !== session { other.suspendInput(reason: "Another session selected") }
+        session.window?.makeFirstResponder(session.surface)
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if terminating { return true }
-        if sender === sessionWindow || sender === model.window {
-            model.disconnect()
-            return false
-        }
-        model.suspendInput(reason: "Hidden to menu bar")
+        if let session = sessionModel(for: sender) { session.disconnect(); return false }
+        model.suspendAllInput(reason: "Hidden to menu bar")
         sender.orderOut(nil)
         return false
     }
     func windowWillEnterFullScreen(_ notification: Notification) {
-        guard notification.object as? NSWindow === sessionWindow else { return }
-        model.fullScreenTransition = true
-        model.suspendInput(reason: "Entering full screen")
+        guard let session = sessionModel(for: notification.object as? NSWindow) else { return }
+        session.fullScreenTransition = true; session.suspendInput(reason: "Entering full screen")
         mainWindow?.orderOut(nil)
     }
     func windowDidEnterFullScreen(_ notification: Notification) {
-        guard notification.object as? NSWindow === sessionWindow else { return }
-        model.isFullScreen = true; model.fullScreenTransition = false
-        sessionWindow?.makeFirstResponder(model.surface); model.surface?.reportGeometry()
-        model.resumeWindowsInput()
+        guard let session = sessionModel(for: notification.object as? NSWindow) else { return }
+        session.fullScreenTransition = false
+        session.isFullScreen = true
+        session.window?.makeFirstResponder(session.surface)
+        finishFullScreenGeometry(session)
     }
     func windowWillExitFullScreen(_ notification: Notification) {
-        guard notification.object as? NSWindow === sessionWindow else { return }
-        model.fullScreenTransition = true; model.suspendInput(reason: "Leaving full screen")
+        guard let session = sessionModel(for: notification.object as? NSWindow) else { return }
+        session.fullScreenTransition = true; session.suspendInput(reason: "Leaving full screen")
     }
     func windowDidExitFullScreen(_ notification: Notification) {
-        guard notification.object as? NSWindow === sessionWindow else { return }
-        model.isFullScreen = false; model.fullScreenTransition = false
-        sessionWindow?.makeFirstResponder(model.surface); model.surface?.reportGeometry()
-        model.resumeWindowsInput()
+        guard let session = sessionModel(for: notification.object as? NSWindow) else { return }
+        session.fullScreenTransition = false
+        session.isFullScreen = false
+        session.window?.makeFirstResponder(session.surface)
+        finishFullScreenGeometry(session)
     }
-    func windowDidFailToEnterFullScreen(_ window: NSWindow) { model.fullScreenTransition = false }
-    func windowDidFailToExitFullScreen(_ window: NSWindow) { model.fullScreenTransition = false }
+    private func finishFullScreenGeometry(_ session: AppModel) {
+        session.fullScreenTransition = false
+        session.window?.contentView?.layoutSubtreeIfNeeded()
+        session.surface?.reportGeometry(force: true)
+        session.resumeWindowsInput()
+    }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        guard let session = sessionModel(for: window) else { return }
+        finishFullScreenGeometry(session)
+    }
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        guard let session = sessionModel(for: window) else { return }
+        finishFullScreenGeometry(session)
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showMain(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -139,23 +170,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
     func menuWillOpen(_ menu: NSMenu) {
-        model.menuOpen = true; model.suspendInput(reason: "Menu bar controls")
+        for session in [model] + model.sessions { session.menuOpen = true }; model.suspendAllInput(reason: "Menu bar controls")
         menu.removeAllItems()
         add(model.sessionRunning ? "\(model.activePC?.name ?? "Windows") · \(model.phase.rawValue)" : "MacRDP", to: menu)
         menu.addItem(.separator())
         add(model.unlocked ? "Open MacRDP" : "Unlock MacRDP…", action: #selector(openMain), to: menu)
         if model.unlocked {
-            if model.sessionRunning {
-                add("Show Windows", action: #selector(openSession), to: menu)
-                let toggle = add("Windows control", action: #selector(toggleControl), to: menu)
-                toggle.state = model.inputMode == .windows ? .on : .off
-                toggle.isEnabled = model.phase == .connected
-                add(model.isConnecting ? "Cancel connection" : "Disconnect", action: #selector(disconnect), to: menu)
-            } else {
-                for pc in model.pcs {
-                    let item = add("Connect to \(pc.name)", action: #selector(connectPC(_:)), to: menu)
-                    item.representedObject = pc.id.uuidString
-                }
+            for pc in model.pcs {
+                let session = model.session(for: pc.id) ?? (model.activePC?.id == pc.id ? model : nil)
+                let item = add(session.map { $0.sessionRunning ? "Show \(pc.name) · \($0.phase.rawValue)" : "Connect to \(pc.name)" } ?? "Connect to \(pc.name)", action: #selector(connectPC(_:)), to: menu)
+                item.representedObject = pc.id.uuidString
+            }
+            if model.hasRunningSessions {
+                let toggle = add("Windows control · \(focusedSession.activePC?.name ?? "Windows")", action: #selector(toggleControl), to: menu)
+                toggle.state = focusedSession.inputMode == .windows ? .on : .off
+                toggle.isEnabled = focusedSession.phase == .connected
+                add("Disconnect \(focusedSession.activePC?.name ?? "Windows")", action: #selector(disconnect), to: menu)
             }
             menu.addItem(.separator())
             add("Keyboard setup & permissions…", action: #selector(keyboardSetup), to: menu)
@@ -166,7 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(.separator())
         add("Quit MacRDP", action: #selector(quit), to: menu)
     }
-    func menuDidClose(_ menu: NSMenu) { model.menuOpen = false }
+    func menuDidClose(_ menu: NSMenu) { for session in [model] + model.sessions { session.menuOpen = false } }
     @discardableResult
     private func add(_ title: String, action: Selector? = nil, to menu: NSMenu) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -174,13 +204,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(item); return item
     }
     @objc private func openMain() { showMain() }
-    @objc private func openSession() { model.showSession = true }
+    @objc private func openSession() { focusedSession.showSession = true }
     @objc private func connectPC(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, let pc = model.pcs.first(where: { $0.id.uuidString == id }) else { return }
         model.connect(pc)
     }
-    @objc private func toggleControl() { model.toggleInput() }
-    @objc private func disconnect() { model.disconnect() }
+    @objc private func toggleControl() { focusedSession.toggleInput() }
+    @objc private func disconnect() { focusedSession.disconnect() }
     @objc private func keyboardSetup() { model.openKeyboardSetup() }
     @objc private func settings() { model.openSettings() }
     @objc private func updates() { model.openUpdates() }

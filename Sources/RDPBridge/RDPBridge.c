@@ -477,7 +477,16 @@ MRSession *mr_session_new(const MRConfiguration *config, MRCallbacks callbacks, 
     SET_BOOL(AutoReconnectionEnabled, false); SET_BOOL(RedirectClipboard, true);
     SET_UINT(ClipboardFeatureMask, CLIPRDR_FLAG_REMOTE_TO_LOCAL | CLIPRDR_FLAG_LOCAL_TO_REMOTE);
     SET_BOOL(UnicodeInput, true);
-    SET_BOOL(AudioPlayback, config->audio); SET_BOOL(AudioCapture, false);
+    SET_BOOL(AudioPlayback, config->audio); SET_BOOL(AudioCapture, config->microphone);
+    if (config->audio) {
+        const char *args[] = { "rdpsnd", "sys:mac" };
+        if (!freerdp_client_add_static_channel(settings, 2, args)
+            || !freerdp_client_add_dynamic_channel(settings, 2, args)) goto fail;
+    }
+    if (config->microphone) {
+        const char *args[] = { "audin", "sys:mac" };
+        if (!freerdp_client_add_dynamic_channel(settings, 2, args)) goto fail;
+    }
 #ifdef MACRDP_HARDWARE_TEST
     SET_BOOL(SoftwareGdi, false);
 #else
@@ -567,11 +576,20 @@ static BOOL drain_input(MRSession *s) {
     pthread_mutex_unlock(&s->display_lock);
     return true;
 }
+static BOOL apply_initial_layout(MRSession *s) {
+    pthread_mutex_lock(&s->input_lock);
+    uint32_t width = s->requested_width, height = s->requested_height, scale = s->requested_scale;
+    pthread_mutex_unlock(&s->input_lock);
+    rdpSettings *settings = s->context->settings;
+    return freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, width)
+        && freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, height)
+        && freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
+}
 void mr_session_run(MRSession *s) {
     if (!s || atomic_load(&s->stop)) return;
     state(s, 1, 0);
     freerdp *instance = s->context->instance;
-    BOOL ok = freerdp_connect(instance);
+    BOOL ok = apply_initial_layout(s) && freerdp_connect(instance);
     if (ok) {
         while (!atomic_load(&s->stop) && !freerdp_shall_disconnect_context(s->context)) {
             HANDLE handles[MAXIMUM_WAIT_OBJECTS]; handles[0] = s->wake;

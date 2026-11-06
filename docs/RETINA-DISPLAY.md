@@ -34,6 +34,19 @@ Desktop scale and device scale have different valid values. The display-control 
 
 Set an initial resolution and desktop-scale policy before connecting. Enable dynamic resolution when supported. Observe window resize, backing-property/screen changes, fullscreen transitions, and display removal. Moving one session between monitors belongs in first-release scope; spanning a session across several monitors can remain deferred.
 
+Use actual current window geometry for initial negotiation; a preferred fullscreen
+transition must never leave connection startup dependent on a callback owned by a
+replaceable remote view. Refresh the current geometry when native window presentation
+finishes. Clear transition state synchronously before refreshing the current surface.
+Keep the latest desired geometry while credentials,
+microphone permission or transport creation are pending. Cache a layout only after
+it has been accepted for initial connection or resize delivery; authentication must
+not silently discard it. Apply any queued newer layout to native settings on the
+protocol worker before `freerdp_connect`, then replay subsequent requests when display
+control becomes available. A host without dynamic resizing must retain a usable
+initial desktop and expose a controlled reconnect rather than silently claim a
+subsequent fullscreen resize succeeded.
+
 Coalesce resize requests with a short debounce; begin around 150 ms and measure. Skip identical layouts and never send zero dimensions while minimized. Preserve the last valid surface during transitions. Track the requested geometry separately from the active geometry received from the server; switch rendering and input transforms coherently when the replacement surface is ready. Discard stale presentation work by generation and avoid allocating a new full-size texture for every intermediate drag event.
 
 Some hosts or legacy Windows apps may not apply DPI changes immediately. Detect/report this accurately, retain a usable view, and offer a controlled reconnect when needed. Do not automatically log out Windows, kill remote applications, or modify server scaling policies. If the host rejects dynamic resolution or high DPI, show the actual mode and offer a supported fixed-resolution fallback.

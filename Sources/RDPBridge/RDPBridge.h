@@ -9,7 +9,7 @@ typedef struct {
     const char *host, *username, *domain, *password, *fingerprint;
     uint16_t port;
     uint32_t width, height, desktop_scale;
-    bool audio;
+    bool audio, microphone;
 } MRConfiguration;
 typedef struct {
     void (*state)(void *, int, uint32_t);

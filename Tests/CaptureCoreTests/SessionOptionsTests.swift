@@ -10,7 +10,8 @@ final class SessionOptionsTests: XCTestCase {
         XCTAssertEqual(pc.textInputMode, .physical)
         XCTAssertNil(pc.modifierMapping)
         XCTAssertNil(pc.clipboardSharing)
-        XCTAssertFalse(pc.audioPlayback)
+        XCTAssertTrue(pc.audioPlayback)
+        XCTAssertTrue(pc.microphoneCapture)
         XCTAssertTrue(pc.allowMacPaste)
         XCTAssertFalse(pc.useVPN)
         XCTAssertNil(pc.vpnServiceID)
@@ -21,7 +22,7 @@ final class SessionOptionsTests: XCTestCase {
         var pc = PCProfile(); pc.host = "test.invalid"
         pc.useVPN = true; pc.vpnServiceID = "fixture-vpn-service"
         pc.favorite = true; pc.lastConnected = Date(timeIntervalSince1970: 123456)
-        pc.resolution = .qhd; pc.viewMode = .actual; pc.audioPlayback = true
+        pc.resolution = .qhd; pc.viewMode = .actual; pc.audioPlayback = true; pc.microphoneCapture = true; pc.sessionControlsPosition = .bottomLeft
         pc.clipboardSharing = false; pc.allowMacPaste = false; pc.reconnectAutomatically = false
         pc.modifierMapping = .macCopyPaste; pc.textInputMode = .text
         let stored = try JSONDecoder().decode(PCProfile.self, from: JSONEncoder().encode(pc))
@@ -29,6 +30,33 @@ final class SessionOptionsTests: XCTestCase {
         let other = PCProfile()
         XCTAssertNil(other.modifierMapping); XCTAssertNil(other.clipboardSharing)
         XCTAssertEqual(other.resolution, .dynamic)
+    }
+
+    func testAudioDefaultsPreserveExplicitOptOutAndUnknownPositionFallsBack() throws {
+        let pc = try JSONDecoder().decode(PCProfile.self, from: Data(#"{"host":"test.invalid","audioPlayback":false,"microphoneCapture":false,"sessionControlsPosition":"future-position"}"#.utf8))
+        XCTAssertFalse(pc.audioPlayback)
+        XCTAssertFalse(pc.microphoneCapture)
+        XCTAssertNil(pc.sessionControlsPosition)
+        XCTAssertTrue(PCProfile().audioPlayback)
+        XCTAssertTrue(PCProfile().microphoneCapture)
+    }
+
+    func testExistingPCsEnableAudioOnceAndLaterOptOutPersists() throws {
+        let suite = "MacRDP.audio-migration.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = PCStore(defaults: defaults)
+        var pc = PCProfile(); pc.host = "test.invalid"
+        pc.audioPlayback = false; pc.microphoneCapture = false; pc.sessionControlsPosition = .bottomLeft
+        try store.save([pc])
+        let migrated = try store.loadWithAudioDefaultsMigration()
+        XCTAssertTrue(migrated[0].audioPlayback)
+        XCTAssertTrue(migrated[0].microphoneCapture)
+        XCTAssertEqual(migrated[0].sessionControlsPosition, .bottomLeft)
+        XCTAssertTrue(defaults.bool(forKey: "enabledAudioDefaultsV1"))
+        pc.audioPlayback = false; pc.microphoneCapture = false
+        try store.save([pc])
+        XCTAssertEqual(try store.loadWithAudioDefaultsMigration(), [pc])
     }
 
     func testFixedResolutionDoesNotDoubleRetinaPixelsOrAlterWindowsScale() {

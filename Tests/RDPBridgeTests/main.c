@@ -26,6 +26,8 @@ typedef struct {
     atomic_int key_down, key_up, mouse_down, mouse_up, layout_width, layout_height, layouts;
     atomic_bool display, authenticated;
     bool nla;
+    bool early_layout;
+    bool no_display_channel;
     int decision;
     MRSession *session;
 } Fixture;
@@ -124,7 +126,7 @@ static void *serve(void *arg) {
             handles[count++] = WTSVirtualChannelManagerGetEventHandle(vcm);
             if (WaitForMultipleObjects(count, handles, FALSE, 25) == WAIT_FAILED) break;
             if (!peer->CheckFileDescriptor(peer) || !WTSVirtualChannelManagerCheckFileDescriptorEx(vcm, atomic_load(&f->activated))) break;
-            if (!disp && WTSVirtualChannelManagerGetDrdynvcState(vcm) == DRDYNVC_STATE_READY) {
+            if (!f->no_display_channel && !disp && WTSVirtualChannelManagerGetDrdynvcState(vcm) == DRDYNVC_STATE_READY) {
                 disp = disp_server_context_new(vcm); assert(disp);
                 disp->custom = f; disp->rdpcontext = peer->context;
                 disp->MaxNumMonitors = 1; disp->MaxMonitorAreaFactorA = 8192; disp->MaxMonitorAreaFactorB = 8192;
@@ -156,6 +158,10 @@ static void certificate(void *user, const char *host, const char *subject, const
     (void)host; (void)subject; (void)issuer;
     Fixture *f = user; assert(fingerprint && strlen(fingerprint) >= 64);
     atomic_store(&f->changed, changed); atomic_store(&f->certificate, true);
+    if (f->early_layout) {
+        mr_resize(f->session, 2400, 1600, 200);
+        mr_resize(f->session, 3024, 1898, 200);
+    }
     if (f->decision >= 0) mr_certificate_reply(f->session, f->decision >= 1);
 }
 static void display(void *user, bool ready) { atomic_store(&((Fixture *)user)->display, ready); }
@@ -225,6 +231,95 @@ static void test(const char *cert, const char *key, int decision, bool changed) 
     printf("PASS real TLS/RDP fixture: decision=%d changed-pin=%d NLA=%d authenticated=%d%s\n", decision, changed, f.nla, atomic_load(&f.authenticated),
         (decision >= 1 && decision <= 3) ? ", Retina frame pixels, dynamic resize, key/mouse delivery, release and resume without disconnect" : ", connection blocked/cancelled");
 }
+static void test_early_layout(const char *cert, const char *key, bool no_display_channel) {
+    Fixture f = {.cert = cert, .key = key, .decision = 1,
+        .early_layout = !no_display_channel, .no_display_channel = no_display_channel};
+    f.listener = socket(AF_INET, SOCK_STREAM, 0); assert(f.listener >= 0);
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    assert(bind(f.listener, (struct sockaddr *)&address, sizeof(address)) == 0);
+    socklen_t size = sizeof(address);
+    assert(getsockname(f.listener, (struct sockaddr *)&address, &size) == 0);
+    assert(listen(f.listener, 1) == 0);
+    MRConfiguration config = {.host = "127.0.0.1", .username = "fixture", .password = "synthetic-test-only",
+        .port = ntohs(address.sin_port), .width = 1600, .height = 1000, .desktop_scale = 200};
+    MRCallbacks callbacks = {.state = state, .frame = frame, .certificate = certificate, .display = display};
+    f.session = mr_session_new(&config, callbacks, &f); assert(f.session);
+    if (no_display_channel) {
+        mr_resize(f.session, 2400, 1600, 200);
+        mr_resize(f.session, 3024, 1898, 200);
+    }
+    pthread_t server, client;
+    assert(pthread_create(&server, NULL, serve, &f) == 0);
+    assert(pthread_create(&client, NULL, run, &f) == 0);
+    wait_flag(&f.connected); wait_flag(&f.frame);
+    uint32_t width = 0, height = 0, stride = 0;
+    double until = seconds() + 8;
+    do {
+        usleep(1000); (void)mr_copy_frame(f.session, NULL, 0, &width, &height, &stride);
+    } while ((width != 3024 || height != 1898) && seconds() < until);
+    assert(width == 3024 && height == 1898);
+    if (no_display_channel) assert(atomic_load(&f.layouts) == 0 && !atomic_load(&f.display));
+    else assert(atomic_load(&f.layout_width) == 3024 && atomic_load(&f.layout_height) == 1898);
+    mr_session_cancel(f.session); assert(pthread_join(client, NULL) == 0);
+    atomic_store(&f.stop, true); assert(pthread_join(server, NULL) == 0);
+    mr_session_free(f.session); close(f.listener);
+    puts(no_display_channel
+        ? "PASS real TLS/RDP initial Retina size uses latest queued layout without display-control support"
+        : "PASS real TLS/RDP handshake retains latest Retina layout requested before connection and display capabilities");
+}
+static void test_concurrent(const char *cert, const char *key) {
+    Fixture peers[2] = {{.cert = cert, .key = key, .decision = 1}, {.cert = cert, .key = key, .decision = 1}};
+    pthread_t servers[2], clients[2];
+    for (int i = 0; i < 2; i++) {
+        Fixture *f = &peers[i];
+        f->listener = socket(AF_INET, SOCK_STREAM, 0); assert(f->listener >= 0);
+        struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        assert(bind(f->listener, (struct sockaddr *)&address, sizeof(address)) == 0);
+        socklen_t size = sizeof(address);
+        assert(getsockname(f->listener, (struct sockaddr *)&address, &size) == 0);
+        assert(listen(f->listener, 1) == 0);
+        MRConfiguration config = {.host = "127.0.0.1", .username = "fixture", .password = "synthetic-test-only",
+            .port = ntohs(address.sin_port), .width = 1600, .height = 1000, .desktop_scale = 200};
+        MRCallbacks callbacks = {.state = state, .frame = frame, .certificate = certificate, .display = display};
+        f->session = mr_session_new(&config, callbacks, f); assert(f->session);
+        assert(pthread_create(&servers[i], NULL, serve, f) == 0);
+        assert(pthread_create(&clients[i], NULL, run, f) == 0);
+    }
+    for (int i = 0; i < 2; i++) { wait_flag(&peers[i].connected); wait_flag(&peers[i].frame); }
+    mr_input_enable(peers[0].session, true);
+    assert(mr_key(peers[0].session, 0x1e, true, false));
+    assert(mr_pointer(peers[0].session, PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, 100, 200));
+    wait_count(&peers[0].key_down, 1); wait_count(&peers[0].mouse_down, 1);
+    assert(atomic_load(&peers[1].key_down) == 0 && atomic_load(&peers[1].mouse_down) == 0);
+    mr_input_enable(peers[0].session, false);
+    wait_count(&peers[0].key_up, 1); wait_count(&peers[0].mouse_up, 1);
+    mr_session_cancel(peers[0].session);
+    assert(pthread_join(clients[0], NULL) == 0);
+    atomic_store(&peers[0].stop, true); assert(pthread_join(servers[0], NULL) == 0);
+    mr_session_free(peers[0].session); close(peers[0].listener);
+
+    assert(!atomic_load(&peers[1].finished));
+    mr_input_enable(peers[1].session, true);
+    assert(mr_key(peers[1].session, 0x1e, true, false));
+    assert(mr_key(peers[1].session, 0x1e, false, false));
+    assert(mr_pointer(peers[1].session, PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, 200, 100));
+    assert(mr_pointer(peers[1].session, PTR_FLAGS_BUTTON1, 200, 100));
+    wait_count(&peers[1].key_down, 1); wait_count(&peers[1].key_up, 1);
+    wait_count(&peers[1].mouse_down, 1); wait_count(&peers[1].mouse_up, 1);
+    wait_flag(&peers[1].display);
+    mr_resize(peers[1].session, 1800, 1200, 200);
+    double until = seconds() + 8;
+    uint32_t width = 0, height = 0, stride = 0;
+    do {
+        usleep(1000); (void)mr_copy_frame(peers[1].session, NULL, 0, &width, &height, &stride);
+    } while ((width != 1800 || height != 1200) && seconds() < until);
+    assert(width == 1800 && height == 1200);
+    mr_session_cancel(peers[1].session);
+    assert(pthread_join(clients[1], NULL) == 0);
+    atomic_store(&peers[1].stop, true); assert(pthread_join(servers[1], NULL) == 0);
+    mr_session_free(peers[1].session); close(peers[1].listener);
+    puts("PASS concurrent RDP sessions: isolated input, held-key/button cleanup, independent disconnect and surviving session resize/input");
+}
 int main(int argc, char **argv) {
     assert(WTSRegisterWtsApiFunctionTable(FreeRDP_InitWtsApi()));
     if (argc == 3 && strcmp(argv[1], "--probe") == 0) {
@@ -247,5 +342,8 @@ int main(int argc, char **argv) {
     test(argv[1], argv[2], 2, false);
     test(argv[1], argv[2], 3, false);
     test(argv[1], argv[2], 4, false);
+    test_early_layout(argv[1], argv[2], false);
+    test_early_layout(argv[1], argv[2], true);
+    test_concurrent(argv[1], argv[2]);
     return 0;
 }

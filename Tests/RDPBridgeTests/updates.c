@@ -8,6 +8,20 @@
 
 static unsigned unicode_down, unicode_up, key_down, key_up, offers, data_sent;
 static bool invalidate_text;
+static unsigned layouts;
+static uint32_t layout_width, layout_height, layout_scale;
+static bool resize_during_send;
+static UINT monitor_layout(DispClientContext *context, UINT32 count,
+                           DISPLAY_CONTROL_MONITOR_LAYOUT *layout) {
+    assert(count == 1 && layout->DeviceScaleFactor == 100);
+    layouts++; layout_width = layout->Width; layout_height = layout->Height;
+    layout_scale = layout->DesktopScaleFactor;
+    if (resize_during_send) {
+        resize_during_send = false;
+        mr_resize(context->custom, 3200, 2000, 200);
+    }
+    return CHANNEL_RC_OK;
+}
 BOOL test_unicode(rdpInput *input, UINT16 flags, UINT16 code) {
     assert(code != 0);
     if (flags & KBD_FLAGS_RELEASE) unicode_up++; else unicode_down++;
@@ -68,6 +82,33 @@ int main(void) {
     assert(output[599 * info.stride + 1001 * 4] == 0x33);
     puts("PASS 4K patch snapshot: 4,096 bytes instead of 33,177,600; accumulated regions, retry, idle, resize and aligned rows");
     free(gdi.primary_buffer); free(output); s->context->gdi = NULL;
+    DispClientContext display = {.custom = s, .SendMonitorLayout = monitor_layout};
+    s->display = &display;
+    mr_resize(s, 2400, 1600, 200); assert(drain_input(s)); assert(layouts == 0);
+    mr_resize(s, 3024, 1898, 200); assert(drain_input(s)); assert(layouts == 0);
+    assert(apply_initial_layout(s));
+    assert(freerdp_settings_get_uint32(s->context->settings, FreeRDP_DesktopWidth) == 3024);
+    assert(freerdp_settings_get_uint32(s->context->settings, FreeRDP_DesktopHeight) == 1898);
+    assert(freerdp_settings_get_uint32(s->context->settings, FreeRDP_DesktopScaleFactor) == 200);
+    assert(freerdp_settings_get_uint32(s->context->settings, FreeRDP_DeviceScaleFactor) == 100);
+    assert(display_caps(&display, 1, 8192, 8192) == CHANNEL_RC_OK);
+    assert(drain_input(s));
+    assert(layouts == 1 && layout_width == 3024 && layout_height == 1898 && layout_scale == 200);
+    mr_resize(s, 3024, 1898, 150); assert(drain_input(s));
+    assert(layouts == 2 && layout_scale == 150);
+    mr_resize(s, 3000, 1900, 200); resize_during_send = true;
+    assert(drain_input(s)); assert(layouts == 3 && layout_width == 3000);
+    assert(drain_input(s)); assert(layouts == 4 && layout_width == 3200 && layout_height == 2000);
+    ChannelDisconnectedEventArgs disconnected = {.name = DISP_DVC_CHANNEL_NAME};
+    channel_disconnected(s->context, &disconnected);
+    mr_resize(s, 3072, 1920, 200); assert(drain_input(s)); assert(layouts == 4);
+    ChannelConnectedEventArgs connected = {.name = DISP_DVC_CHANNEL_NAME, .pInterface = &display};
+    channel_connected(s->context, &connected);
+    assert(display_caps(&display, 1, 8192, 8192) == CHANNEL_RC_OK);
+    assert(drain_input(s));
+    assert(layouts == 5 && layout_width == 3072 && layout_height == 1920 && layout_scale == 200);
+    s->display = NULL; s->display_ready = false;
+    puts("PASS latest pre-capability Retina layout, scale-only resize, newer layout during send and display-channel reopen");
     atomic_store(&s->connected, true); mr_input_enable(s, true);
     const uint16_t text[] = {0x0410, 0xd83d, 0xde00};
     assert(mr_text(s, text, 3)); assert(drain_input(s)); assert(unicode_down == 3 && unicode_up == 3);

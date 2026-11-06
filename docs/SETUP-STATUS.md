@@ -1,5 +1,152 @@
 # Setup status — 2026-10-24
 
+## Production release preparation — 0.3.20, 2026-11-06
+
+- The user confirmed the corrected 0.3.19 test build works better and that the desktop
+  view is correct on their Windows host, then explicitly requested GitHub publication
+  so the original app can update. This confirms that specific visual/connection path;
+  it does not mark all physical keyboard, trackpad, audio and Retina matrix rows passed.
+- Production 0.3.20 uses the corrected 0.3.19 connection sequence with multiple PCs,
+  ordinary Mac-mode input and Command+V, default-enabled speaker/microphone sharing,
+  one-time existing-PC migration and per-PC control positions. It retains the original
+  app identity, update key/feed and pinned credential helper. The separate Desktop
+  test identity remains outside the production update channel.
+- SOL's complete release core/native, clipboard-settings, audio and display checks
+  passed; core coverage totals 60 tests. Additional signing, input queue, clipboard,
+  ten-scenario localhost RDP and synthetic VideoToolbox/software fallback checks passed.
+  Astra approved production readiness. Release notes and README now describe current
+  capabilities and microphone-on-lock behavior. The publish workflow now also gates
+  full native execution, RDP integration, clipboard and native audio checks.
+- Microphone cleanup observes app lock, system sleep/display sleep and user-session
+  deactivation. Lock-screen-only event delivery without sleep is not verified; release
+  notes do not promise it. Security settings now explain the microphone-session exception
+  to preserving established connections on app lock.
+- Release packages must be rebuilt from the clean reviewed commit matching origin/main,
+  preserve the production identity/helper and contain the signed appcast plus ZIP/DMG
+  and checksums. Publication and downloaded-asset verification are performed after
+  these preparations; this entry does not claim a live Sparkle install/relaunch test.
+
+## Black-session correction — 0.3.19 test, 2026-11-06
+
+- User reported a fully dark remote session in 0.3.18. A real native fixture reproduced
+  a startup deadlock: replacing the NSWindow's hosted remote surface cancelled the
+  view-owned fullscreen completion while the model's transition flag stayed true.
+  This proves a regression mechanism, not the user's exact runtime event trace.
+- Removed the pre-connect fullscreen gate, sheet-wait logic, watchdogs and view-owned
+  settle callbacks added in 0.3.18. Restored the 0.3.17 connection-before-fullscreen
+  sequence. Window delegate enter/exit/failure callbacks now clear transition state
+  synchronously before refreshing whichever surface is current, independent of view lifetime.
+- Retained accepted-layout caching, authentication-time size forwarding, pre-handle
+  resize queues and the protocol worker's latest initial layout snapshot. The correction
+  does not revert unrelated audio, microphone, clipboard, per-PC controls or multi-PC work.
+- SOL implemented and Astra approved the correction. All 60 core tests and the complete
+  native suite passed. The old-path reproduction is recorded in `build/dark-repro-native.log`;
+  corrective coverage includes actual native view replacement/reattachment and synchronous
+  fullscreen completion in `build/dark-fix-native.log`.
+- Built **MACRDP TEST 0.3.19** and verified its deep signature. After a read-only process
+  check confirmed the Desktop test app had closed, replaced that copy and retained 0.3.18
+  under `build/previous-desktop-macrdp-test-0.3.18.app`. No app was stopped/restarted by
+  the agent and the original app was not changed. Actual remote visual recovery still
+  requires a connection with the user's Windows host.
+
+## Initial Retina size and fullscreen timing — 0.3.18 test, 2026-11-06
+
+- Fixed concrete lost-layout paths: authentication-stage updates were ignored after
+  being cached by the view, and resize calls before native handle creation were lost.
+  Geometry is now cached only after acceptance, retained before transport creation,
+  forwarded during sign-in and rechecked on connection/display-capability events.
+- Fullscreen startup waits for sheet dismissal, native presentation and settled view
+  layout before starting RDP. New transitions cancel stale layout callbacks. Explicit
+  fullscreen failure falls back to settled windowed geometry; a bounded watchdog handles
+  ignored requests but does not time out an animation that has actually started.
+- The protocol worker applies the latest queued width/height/Windows scale to initial
+  FreeRDP settings before connecting. This avoids relying on display-control support
+  to repair an outdated initial size. DeviceScaleFactor remains 100; backing geometry,
+  Windows scaling and local image fitting remain separate.
+- SOL implemented Swift changes and Astra approved the complete review. All 60 core
+  tests, full native regressions, input queue and display-update tests passed. The real
+  localhost RDP suite passed ten scenarios, including authentication-time resize bursts
+  and an initial 3024×1898 frame on a host with no display-control channel. Deterministic
+  tests cover scale-only changes, newer requests during a send and channel reopen.
+- Built signed **MACRDP TEST 0.3.18**, verified the Desktop copy's deep signature,
+  version, test identity, microphone usage text and disabled updater. Previous 0.3.17
+  is kept under `build/previous-desktop-macrdp-test-0.3.17.app`. The test app was inactive
+  and was not launched. The original app was not replaced, terminated or relaunched.
+- Actual native Space animation, repeated connections to the user's Windows host,
+  remote Windows DPI behavior and visual sharpness remain manual acceptance checks;
+  the implementation does not claim every host/application honors requested DPI.
+
+## Enabled audio defaults and per-PC controls — 0.3.17 test, 2026-11-06
+
+- New PCs default speaker playback and microphone sharing to enabled. At first launch,
+  existing PCs are enabled once using `enabledAudioDefaultsV1`, with the profile save
+  preceding the marker. Later opt-outs persist. Session children do not rerun migration.
+  The test variant excludes an inherited original-app migration marker, so its migration
+  saves in the test preference domain without changing original preferences.
+- Added optional typed per-PC session control positions, with **Use app setting** for
+  inheritance. The PC editor and live controls both support all six positions; live
+  changes persist immediately using the latest profile and preserve unrelated edits.
+  Global Settings changes affect only sessions without overrides. Unknown saved values
+  fall back to the app setting instead of making profiles unreadable.
+- SOL implemented and Astra approved the changes. All 60 core tests and the full native
+  suite passed, including one-time migration/later opt-outs, independent overrides,
+  global fallback, persistence, clipboard, permission and lifecycle regressions. The
+  generated compact session controls preview was inspected; the new picker fits.
+- Built and signed **MACRDP TEST 0.3.17** and replaced the inactive Desktop copy after
+  verifying its deep signature, version, separate identity and microphone usage text.
+  Version 0.3.16 is retained under `build/previous-desktop-macrdp-test-0.3.16.app`.
+  Only the original Applications app was running; it was not replaced, relaunched or
+  terminated. The test app was not launched, no actual profiles migrated during this
+  work, and no microphone accessed. Live Windows audio/input acceptance remains pending.
+
+## Native Mac audio and microphone — 0.3.16 test, 2026-11-06
+
+- Added default-off per-PC microphone redirection with a purpose string and public
+  AVFoundation authorization. Permission is requested only on an opted-in connection;
+  denied/restricted access gives recovery instructions, and cancelled/stale permission
+  results cannot start transport. Permission is checked again before transport creation.
+- Speaker playback and microphone capture are independent and explicitly select FreeRDP's
+  native Mac rdpsnd/audin backends. A pinned patch adds mono/stereo signed 16-bit PCM input
+  and rejects unsupported sample widths/invalid format geometry before queue allocation.
+  The dependency build applies the patch idempotently and bundles it with upstream notices.
+- App lock and system lock/sleep disconnect actual/pending microphone-enabled sessions,
+  even after a profile edit; non-microphone sessions remain connected. Ordinary focus
+  switching does not stop calls. No private plugin structs or global permission edits are used.
+- SOL implemented Swift permission/UI/lifecycle changes; Astra approved Swift and bridge/
+  backend review. 58 core tests, full native smoke/permission regressions, independent
+  audio config/addin checks, hardware-free PCM format tests, input queue, clipboard,
+  display-update and eight localhost RDP scenarios passed. The packaged native library's
+  executable code matches the rebuilt backend; an isolated test resolved the actual bundled
+  input/output addins without opening devices. Final diff and shell syntax checks passed.
+- Built signed **MACRDP TEST 0.3.16**, verified its identity/version, microphone usage text,
+  disabled updater and deep signature, then replaced the Desktop 0.3.15 copy. The previous
+  copy is retained under `build/previous-desktop-macrdp-test-0.3.15.app`. Original app,
+  credentials and running sessions were not accessed or changed; the test app was not launched.
+- Real speaker playback, microphone hardware capture, Windows recording redirection, device
+  routing and call quality remain NOT TESTED. Windows host policy must permit redirection.
+
+## Multiple PCs and ordinary Mac-mode control — 0.3.15 test, 2026-11-06
+
+- Each PC has an independent session model, native window, credential lookup, transport,
+  reconnect state and focus/input ownership. Opening the same active PC reuses its window.
+  Workspace settings and credential access remain shared; lock and quit clean up every session.
+- Mac mode permits focused remote typing, clicking, dragging and scrolling without exclusive
+  capture. Command shortcuts and macOS desktop navigation remain local. Command+V pastes
+  Mac clipboard text into the focused PC without changing modes, respecting per-PC permission.
+  Background session clipboard notifications cannot overwrite the Mac clipboard.
+- SOL implemented the changes; Astra reviewed the architecture and final source. 58 core tests,
+  complete native smoke tests, doctor/dependency probe, input queue, clipboard and display-update
+  tests passed. The real localhost RDP suite passed its seven existing cases plus two concurrent
+  sessions with isolated input, held-key/button cleanup, independent disconnect and surviving
+  session input/resize. FreeRDP 3.32.2 and Swift 6.4 were checked.
+- Built and signed **MACRDP TEST 0.3.15**, bundled its native dependencies and verified the
+  Desktop copy's signature. Separate identity `uz.macrdp.testshared` uses original preferences
+  as fallback and the existing Keychain service via a dedicated validated helper; capture
+  verification must be completed for this app identity. See [data sharing](RELEASING.md).
+- The test app was not launched and the original running app was not replaced or terminated.
+  Real Windows clipboard paste, physical keyboard/trackpad behavior and actual Retina quality
+  across two remote Windows hosts remain manual acceptance checks.
+
 ## Input, menu bar, presentation and updater implementation
 
 - Windows input intent now defaults on per session, survives temporary focus/Space changes, and remains separate from an explicit Mac selection. Four-finger release waits for departure before recapture. Physical gesture and Windows shortcut acceptance is still pending.

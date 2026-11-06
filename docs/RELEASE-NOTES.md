@@ -1,10 +1,11 @@
-MacRDP now prefers VideoToolbox H.264 decoding on supported Macs, with software fallback when hardware initialization or format negotiation is unavailable. Decoder status appears in session diagnostics. Rendering keeps Retina quality and avoids redundant layout and frame-scheduling work.
+Connect to multiple PCs at once in separate windows. Each connection keeps its own input, login, retry and disconnect state, and opening an already connected PC brings its window forward.
 
-- Per-PC VPN selection waits for you to connect the VPN manually; MacRDP never starts or stops it.
-- Floating session controls stay available, with an icon-only Release to Mac button and configurable positioning.
-- Unlock and reset the app PIN using Mac authentication.
-- Includes clipboard, connection handling and session settings improvements. Experimental Dock hiding has been removed.
+- Mac mode keeps ordinary Windows typing, clicking, dragging and scrolling available while Mac system shortcuts stay local. Command+V pastes Mac clipboard text into the focused Windows session.
+- Windows sound can play through the Mac, and Windows apps can use the Mac microphone. Both options default on; existing PCs are enabled once after upgrading, and later per-PC opt-outs remain saved. macOS requests microphone permission when connecting to an enabled PC.
+- Locking MacRDP, or Mac sleep/session deactivation, disconnects microphone-enabled sessions to stop recording. Other established sessions stay connected.
+- Each PC can override the floating controls position, from its editor or live controls. “Use app setting” follows the default in Settings.
+- Fixed lost Retina size updates during sign-in and transport startup. Removed the pre-connect fullscreen wait that could leave the test build blank; the corrected connection sequence was confirmed working by the tester.
 
-Synthetic H.264 hardware decoding and forced software fallback were verified on an M2 Pro. Live FPS gains depend on the server, network and workload; broad AVC444 and device-loss coverage is still pending. The existing software test build remains available locally for comparison.
+Validated with 60 core tests, native lifecycle/input/permission regressions, synthetic audio format checks and localhost RDP integration, including concurrent connections and initial Retina sizing without dynamic resize support. Live speaker/microphone interoperability and call quality remain dependent on Windows policy, devices and the network and have not been comprehensively tested.
 
-Install the DMG or use the app updater. This release retains the production app identity and credential helper. It is locally signed, not Apple-notarized.
+Install the DMG or use Settings → Updates in the original MacRDP app after disconnecting active sessions. Saved PCs, PIN and Keychain passwords are preserved. This release retains the production app identity, unchanged credential helper and existing update-signing key. It is locally signed, not Apple-notarized. The separate MACRDP TEST app has automatic updates disabled.

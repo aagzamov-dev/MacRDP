@@ -1,0 +1,19 @@
+--- a/channels/audin/client/mac/audin_mac.m
++++ b/channels/audin/client/mac/audin_mac.m
+@@ -115 +115 @@
+-	if (!mac->isAuthorized)
++	if (device == nullptr || format == nullptr || !mac->isAuthorized)
+@@ -118,4 +118,3 @@
+-	if (device == nullptr || format == nullptr)
+-		return FALSE;
+-
+-	if (format->nChannels != 2)
++	/* AudioQueue buffers below hold signed 16-bit PCM, including mono microphones. */
++	if ((format->nChannels != 1 && format->nChannels != 2) ||
++	    format->wBitsPerSample != 16 || format->nSamplesPerSec == 0)
+@@ -142,4 +141 @@
+-	if (!mac->isAuthorized)
+-		return ERROR_INTERNAL_ERROR;
+-
+-	if (device == nullptr || format == nullptr)
++	if (!audin_mac_format_supported(device, format) || FramesPerPacket == 0)

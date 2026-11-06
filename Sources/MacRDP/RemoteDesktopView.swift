@@ -41,7 +41,7 @@ final class RemoteDesktopView: NSView, @MainActor NSTextInputClient {
     var hasTouches: Bool { !points.isEmpty }
     func synchronizeCapsLock() { capsLock = NSEvent.modifierFlags.contains(.capsLock) }
     private var resizeWork: DispatchWorkItem?
-    private var lastLayout: DisplayLayout?
+    private(set) var lastLayout: DisplayLayout?
     private var points: [Int: TouchPoint] = [:]
     private let touchIdentities = NSMapTable<AnyObject, NSNumber>(keyOptions: .strongMemory, valueOptions: .strongMemory)
     private var nextTouchID = 0
@@ -118,12 +118,12 @@ final class RemoteDesktopView: NSView, @MainActor NSTextInputClient {
         let item = DispatchWorkItem { [weak self] in self?.reportGeometry() }
         resizeWork = item; DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
     }
-    func reportGeometry() {
+    func reportGeometry(force: Bool = false) {
         guard bounds.width > 1, bounds.height > 1, window?.isMiniaturized != true, let pc = model?.activePC else { return }
         let layout = DisplayLayout(points: bounds.size, backing: convertToBacking(bounds).size,
                                    retina: pc.optimizeRetina, scale: pc.desktopScale, fixed: pc.resolution)
-        if lastLayout != layout || model?.phase == .connecting {
-            lastLayout = layout; model?.geometry(layout)
+        if force || lastLayout != layout || model?.phase == .connecting {
+            if model?.geometry(layout) == true { lastLayout = layout }
         }
         refreshCursor()
     }
@@ -241,7 +241,12 @@ final class RemoteDesktopView: NSView, @MainActor NSTextInputClient {
             if model?.sessionControlsOpen == true { updateStatistics(now: ProcessInfo.processInfo.systemUptime) }
         }
     }
+    private func localMacShortcut(_ event: NSEvent) -> Bool {
+        RemoteKeyboardPolicy.keepsShortcutLocal(mode: model?.inputMode ?? .mac, key: event.keyCode,
+            command: event.modifierFlags.contains(.command), control: event.modifierFlags.contains(.control))
+    }
     override func keyDown(with event: NSEvent) {
+        if localMacShortcut(event) { super.keyDown(with: event); return }
         if model?.usesTextInput == true {
             guard model?.remoteInput == true, model?.capture == false else { return }
             if event.modifierFlags.intersection([.control, .command]).isEmpty {
@@ -252,10 +257,12 @@ final class RemoteDesktopView: NSView, @MainActor NSTextInputClient {
         model?.nativeKey(KeyStroke(key: event.keyCode, down: true, repeating: event.isARepeat))
     }
     override func keyUp(with event: NSEvent) {
+        if localMacShortcut(event) { return }
         guard model?.usesTextInput != true else { return }
         model?.nativeKey(KeyStroke(key: event.keyCode, down: false))
     }
     override func flagsChanged(with event: NSEvent) {
+        if model?.inputMode == .mac && (event.modifierFlags.contains(.command) || [54, 55].contains(event.keyCode)) { return }
         guard model?.usesTextInput != true else { return }
         let flags = CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
         if event.keyCode == 57 {
@@ -307,12 +314,6 @@ final class RemoteDesktopView: NSView, @MainActor NSTextInputClient {
     override func otherMouseDown(with event: NSEvent) { if event.buttonNumber == 2 { mouse(event, button: 0x4000, down: true) } }
     override func otherMouseUp(with event: NSEvent) { if event.buttonNumber == 2 { mouse(event, button: 0x4000, down: false) } }
     override func scrollWheel(with event: NSEvent) {
-        if model?.activePC?.viewMode == .actual && model?.inputMode == .mac {
-            let rect = geometry.imageRect
-            pan = CGPoint(x: rect.midX - bounds.midX + event.scrollingDeltaX,
-                          y: rect.midY - bounds.midY + event.scrollingDeltaY)
-            redraw = true; wakePresentation(); return
-        }
         for flags in scrollWheelFlags(deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY, precise: event.hasPreciseScrollingDeltas) {
             send(event, flags: flags)
         }

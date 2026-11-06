@@ -39,6 +39,9 @@ Record OS/build, keyboard/layout, app build/signing identity, permission state, 
 | K21 | Built-in and external keyboard; English/Russian layouts if used | Scan-code behavior and text mode both documented | NOT TESTED |
 | K22 | Three-/four-finger gestures | Exact supported behavior recorded; shortcut escape always works | NOT TESTED |
 | K23 | Escape and pointer input during Retina resize/decoding load | Prompt local release, accurate cursor, no stale modifiers after display changes; see [Retina matrix](RETINA-DISPLAY.md) | NOT TESTED |
+| K24 | Select Mac mode and use the focused Windows surface | Ordinary typing, click/drag and two-finger scrolling still work; Command+Tab and macOS desktop gestures remain local; no exclusive capture | NOT TESTED |
+| K25 | Copy harmless text on Mac, then Command+V in a Mac-mode Windows surface | Text pastes only into the focused PC; mode stays Mac; per-PC paste restriction is respected | NOT TESTED |
+| K26 | Open two PCs, switch windows with a modifier/button held, then close one | Old PC releases held input; only focused PC receives new input; remaining session stays connected and usable | NOT TESTED |
 
 K22 is optional and does not gate the initial keyboard milestone. Other unavailable hardware/layout combinations may be recorded as not tested with a reason. Never mark an entire row passed based solely on a unit test.
 

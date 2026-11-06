@@ -11,6 +11,7 @@
     <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Use your Mac microphone in a Windows session when you enable microphone sharing for that PC.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>SUFeedURL</key><string>https://github.com/aagzamov-dev/MacRDP/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key><string>gVwCdXYLgJ+ZRTA2+zK86Twky3WoBmEF41Y8jTZjZzg=</string>

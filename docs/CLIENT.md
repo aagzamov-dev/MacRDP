@@ -1,5 +1,109 @@
 # Native RDP client
 
+## 0.3.19 test — remove the fullscreen startup deadlock (2026-11-06)
+
+Version 0.3.18 introduced a pre-connection fullscreen wait. Native reproduction
+showed that replacing the hosted remote view could cancel its completion callback
+and leave the model's transition flag set, preventing transport startup indefinitely.
+That wait and its view-owned completion have been removed. The client again connects
+using the actual current window geometry, then enters fullscreen after connection,
+as in 0.3.17. Window delegate completion clears transition state synchronously before
+refreshing the current view, even if an earlier view was replaced or detached.
+
+The accepted-layout cache, authentication-stage forwarding, pre-handle resize queue
+and initial native layout snapshot fixes remain. These address lost size updates
+without making connection depend on a replaceable view's delayed callback. The old
+failure was reproduced with real native view replacement; the corrective regression
+checks replacement/reattachment and fullscreen completion. The exact sequence in the
+user's reported black session and real Windows visual recovery remain unobserved.
+
+## 0.3.18 test — connection size and fullscreen startup (2026-11-06)
+
+Fullscreen connections now wait for native fullscreen layout to settle before
+starting RDP. The initial desktop resolution and Windows scaling use the session
+view's final backing geometry. Connection-time size changes remain queued through
+sign-in and native transport creation, and the latest queued layout is applied to
+the initial RDP settings before connecting. This also covers hosts without dynamic
+display-control support. Connected/display-capability events recheck current geometry.
+
+Login sheets finish closing before fullscreen is requested. A failed or ignored
+fullscreen request falls back to the current window's settled geometry; entering a
+new transition cancels an older layout callback. A fullscreen animation that has
+actually started is not timed out. The client no longer relies on a fullscreen jump
+after connection to obtain the intended starting resolution.
+
+Automated/native checks cover these timing paths and real localhost RDP fixtures
+verify final Retina framebuffer dimensions with and without display-control support.
+Repeated connections to the user's Windows host, actual native fullscreen animation
+and Windows DPI behavior remain manual acceptance checks. Hosts and individual Windows
+applications may still impose their own scaling limitations.
+
+## 0.3.17 test — enabled audio defaults and per-PC controls (2026-11-06)
+
+Speaker playback and microphone sharing default to enabled for new PCs. Existing
+PCs are switched on once at first launch of this version, as requested; subsequent
+per-PC opt-outs remain saved. macOS microphone permission is still required before
+a microphone-enabled connection can start.
+
+**Settings → Session → Session controls → Position** remains the app default.
+Each PC can choose **Use app setting** or its own position in **Edit PC → Advanced
+settings**, or change the position from its live session controls. Overrides are saved
+per PC and take effect immediately. Clearing an override restores the app default;
+changing Settings moves only sessions that follow that default. New PCs follow the
+app setting automatically.
+
+## 0.3.16 test — Mac speakers and microphone (2026-11-06)
+
+In **Edit PC → Advanced settings**, enable **Play Windows audio on this Mac** to
+hear the remote desktop through the Mac's selected output. Enable **Use Mac microphone
+in Windows** to redirect the Mac's default input device. Save and reconnect for audio
+changes to take effect. Existing profiles retain their playback setting; microphone
+sharing defaults off.
+
+On the first microphone-enabled connection, macOS asks for microphone access. No
+permission is requested on launch or for PCs without microphone sharing. A denial or
+restriction stops that connection with instructions to enable access under
+**System Settings → Privacy & Security → Microphone**, or turn microphone sharing off
+for that PC. Disconnecting or quitting closes capture. Locking MacRDP, Mac sleep or
+session deactivation disconnects microphone-enabled sessions to stop recording; ordinary session
+focus changes keep calls connected. Non-microphone sessions retain their existing lock behavior.
+
+The packaged pinned FreeRDP build explicitly uses its native Mac rdpsnd/audin backends.
+A small upstream patch supports mono and stereo 16-bit PCM capture and rejects formats
+that do not match its buffer allocation. Permission/lifecycle, addin resolution and
+format tests use injected responses/synthetic data without opening audio hardware.
+Real Windows playback, recording, device routing and call quality remain manual checks;
+Windows must permit RDP audio playback/recording redirection.
+
+Manual acceptance: enable playback and play harmless Windows audio; enable microphone
+and approve the macOS prompt, then check the Windows input-level meter without saving a
+recording. Check a denied-permission attempt and reconnect with microphone sharing off.
+Confirm that switching windows preserves the call and locking MacRDP stops the microphone
+connection while a second, non-microphone PC remains connected. These physical checks
+have not been performed by the agent.
+
+## 0.3.15 test — multiple PCs and Mac-mode input (2026-11-06)
+
+Connect to several saved PCs at once; each opens in its own window. Connecting to
+an already active PC brings that window forward. Each connection, login prompt,
+retry and disconnect is independent. Lock releases input across all sessions while
+keeping established connections; quit ends all sessions.
+
+Mac mode now keeps ordinary typing, pointer input and two-finger scrolling working
+in the focused Windows desktop, including Actual pixels view. Mac shortcuts and
+desktop gestures stay local. Command+V pastes Mac clipboard text into that PC without
+switching to Windows mode; the existing Paste action remains available in both modes.
+Per-PC paste permission applies. Clipboard contents are read only when requested.
+Only the focused session may import remote clipboard updates.
+
+The separately signed **MACRDP TEST** app uses the original saved PCs/settings as
+fallback defaults and shares existing PIN/password records through Keychain. Read
+[test data sharing](RELEASING.md) before changing credentials. It needs its own
+Accessibility permission and release verification for exclusive Windows shortcuts.
+The original app stays installed and running. Automated/native checks and localhost
+RDP concurrency pass; physical shortcuts, trackpad behavior, Windows clipboard paste
+and real Retina presentation still require manual testing.
+
 ## 0.3.0 — rendering and session improvements (2026-10-28)
 
 The session uses asynchronous Metal pipeline setup, a reusable private desktop texture and at most three reusable shared staging buffers. The bridge accumulates dirty regions until a snapshot is consumed. Partial snapshots update only the affected texture region; a fresh session, surface resize or renderer recovery requests a complete image. GPU commands retain their source frames until completion. Failed Metal setup or execution falls back to full CoreGraphics snapshots. The decoder remains the installed FreeRDP software path; Metal presentation is not hardware video decoding.

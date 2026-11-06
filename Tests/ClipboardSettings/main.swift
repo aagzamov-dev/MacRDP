@@ -35,7 +35,7 @@ await MainActor.run {
     model.unlocked = false
     model.receiveClipboard("locked again", generation: 3)
     precondition(writes.count == 2)
-    var pc = PCProfile(); pc.host = "test.invalid"; pc.clipboardSharing = false
+    var pc = PCProfile(); pc.microphoneCapture = false; pc.host = "test.invalid"; pc.clipboardSharing = false
     pc.modifierMapping = .macCopyPaste; pc.textInputMode = .text
     try! PCStore(defaults: defaults).save([pc])
     let session = AppModel(defaults: defaults, keyboardAccess: access)
@@ -211,7 +211,7 @@ func testModelWaitsForManualVPN() async throws {
         macAuthentication: FakeMacAuthentication(), sessionVPN: waiter)
     model.loading = false
     await model.unlockWithMac()
-    var pc = PCProfile(); pc.host = "test.invalid"; pc.username = "fixture"
+    var pc = PCProfile(); pc.microphoneCapture = false; pc.host = "test.invalid"; pc.username = "fixture"
     pc.useVPN = true; pc.vpnServiceID = "fixture"
     let accepted = await model.submitCredentials(pc, password: "fixture-password")
     precondition(accepted)

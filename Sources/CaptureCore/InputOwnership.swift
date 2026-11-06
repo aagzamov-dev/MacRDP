@@ -32,3 +32,13 @@ public struct InputOwnership: Sendable {
         return mode == .windows && !blocked
     }
 }
+
+public enum RemoteKeyboardPolicy {
+    public static func keepsShortcutLocal(mode: InputMode, key: UInt16, command: Bool, control: Bool) -> Bool {
+        mode == .mac && (command || (control && (123...126).contains(key)))
+    }
+    public static func pastesMacText(mode: InputMode, key: UInt16, command: Bool,
+                                    control: Bool, option: Bool, shift: Bool) -> Bool {
+        mode == .mac && key == 9 && command && !control && !option && !shift
+    }
+}

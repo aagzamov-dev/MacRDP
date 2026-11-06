@@ -12,10 +12,13 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then echo 'R
 ./scripts/test-signing.sh
 ./scripts/test.sh
 ./scripts/test-input-queue.sh
-./scripts/test-native.sh --build-only
+./scripts/test-native.sh
+./scripts/test-rdp.sh
+bash scripts/test-clipboard.sh
 bash scripts/test-clipboard-settings.sh
 bash scripts/test-display-updates.sh
 bash scripts/build-hardware-dependencies.sh
+bash scripts/test-audio.sh
 bash scripts/test-hardware-decoding.sh
 if [[ ! -f "build/releases/$version/appcast.xml" ]]; then ./scripts/package-release.sh "$version"; fi
 commit="$(git rev-parse HEAD)"

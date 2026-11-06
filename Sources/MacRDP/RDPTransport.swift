@@ -74,6 +74,7 @@ final class RDPTransport: @unchecked Sendable {
     private let mutex = NSLock()
     private let worker = DispatchQueue(label: "MacRDP FreeRDP session", qos: .userInitiated)
     private var handle: OpaquePointer?
+    private var pendingLayout: DisplayLayout?
     private var cancelled = false
     private var clipboardSharing = true
     private var clipboardGeneration: UInt64 = 1
@@ -135,7 +136,8 @@ final class RDPTransport: @unchecked Sendable {
                 password.withCString { password in fingerprint.withCString { fingerprint in
                     var config = MRConfiguration(host: host, username: username, domain: domain, password: password,
                         fingerprint: fingerprint, port: UInt16(profile.port) ?? 3389,
-                        width: UInt32(layout.width), height: UInt32(layout.height), desktop_scale: UInt32(layout.desktopScale), audio: profile.audioPlayback)
+                        width: UInt32(layout.width), height: UInt32(layout.height), desktop_scale: UInt32(layout.desktopScale),
+                        audio: profile.audioPlayback, microphone: profile.microphoneCapture)
                     return mr_session_new(&config, callbacks, Unmanaged.passUnretained(self).toOpaque())
                 }}
             }}}
@@ -143,6 +145,10 @@ final class RDPTransport: @unchecked Sendable {
             let shouldCancel = mutex.withLock {
                 handle = port
                 mr_clipboard_enable(port, clipboardSharing, clipboardGeneration)
+                if !cancelled, let pendingLayout {
+                    mr_resize(port, UInt32(pendingLayout.width), UInt32(pendingLayout.height), UInt32(pendingLayout.desktopScale))
+                    self.pendingLayout = nil
+                }
                 return cancelled
             }
             if shouldCancel { mr_session_cancel(port); notify(.state(.disconnected, 0)); return }
@@ -152,7 +158,7 @@ final class RDPTransport: @unchecked Sendable {
 
     func cancel() {
         mutex.withLock {
-            cancelled = true
+            cancelled = true; pendingLayout = nil
             if let handle { mr_session_cancel(handle) }
         }
     }
@@ -192,9 +198,16 @@ final class RDPTransport: @unchecked Sendable {
     func pointer(flags: UInt16, x: UInt16, y: UInt16) {
         mutex.withLock { if let handle { _ = mr_pointer(handle, flags, x, y) } }
     }
-    func resize(_ layout: DisplayLayout) {
-        mutex.withLock { if let handle { mr_resize(handle, UInt32(layout.width), UInt32(layout.height), UInt32(layout.desktopScale)) } }
+    @discardableResult
+    func resize(_ layout: DisplayLayout) -> Bool {
+        mutex.withLock {
+            guard !cancelled else { return false }
+            if let handle { mr_resize(handle, UInt32(layout.width), UInt32(layout.height), UInt32(layout.desktopScale)) }
+            else { pendingLayout = layout }
+            return true
+        }
     }
+    var queuedDisplayLayout: DisplayLayout? { mutex.withLock { pendingLayout } }
     func certificate(accept: Bool) { mutex.withLock { if let handle { mr_certificate_reply(handle, accept) } } }
     func requestFrame() { mutex.withLock { fullFrame = true }; frameChanged() }
     func setPresentation(visible: Bool, incremental: Bool) {

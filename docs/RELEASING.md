@@ -22,6 +22,31 @@ Sparkle’s separate Ed25519 signatures protect the archive and feed. Self-signi
 
 ## Build a local package
 
+### Separate test app using existing data
+
+`bash scripts/package-test-app.sh 0.3.19 shared-data` builds **MACRDP TEST** with the
+separate `uz.macrdp.testshared` identity and the patched native libraries. It refreshes
+the pinned FreeRDP dependency build, preserving the hardware-decoder patch and applying
+the Mac microphone mono/stereo 16-bit PCM patch. Both patches are bundled with the
+upstream license notices. `bash scripts/test-audio.sh` checks the installed native
+audio addins and PCM negotiation/format guards without opening an audio device.
+It does not launch, replace, or terminate the original app. Automatic updates are
+disabled. Original saved PCs and settings are registered as fallback defaults in
+memory; test preference changes are saved in the test app's domain. Capture release
+verification is excluded because the test app needs its own Accessibility permission
+and release check.
+
+The test also excludes the original domain's `enabledAudioDefaultsV1` marker.
+On first launch of 0.3.17, existing PCs get speaker playback and microphone sharing
+enabled once in the test preference domain. New PCs default to both enabled. Later
+per-PC opt-outs are preserved. No original preferences are changed by this migration.
+
+The dedicated signed test credential helper validates the test app's identity and
+uses the original Keychain service, without exporting credentials. The original PIN
+and saved passwords are shared: changing/removing them in either app affects both,
+and signing in updates the shared lock attempt counters. macOS may ask to authorize
+the test helper to access existing Keychain items. The original helper stays unchanged.
+
 ```sh
 ./scripts/setup-signing.sh   # Once on this build Mac; reuse the original identity afterward.
 ./scripts/package-release.sh 0.2.1
@@ -39,7 +64,14 @@ Commit and push reviewed changes to `main`, then:
 ./scripts/publish-release.sh 0.2.2
 ```
 
-The script verifies the clean commit matches `origin/main`, runs the behavioral/native/RDP suites, packages if necessary, verifies the package belongs to that clean commit, and uploads a **draft** GitHub Release with the signed zip, installer DMG, checksums and `appcast.xml`. Review and publish the draft on GitHub. Publishing makes that release available through the existing in-app update feed; no GitHub token is stored in the app and no separate web server is required.
+The script verifies the clean commit matches `origin/main`, runs signing, core, input,
+full native, localhost RDP, clipboard, audio, display and decoder checks, packages if
+necessary, verifies the package belongs to that clean commit, and uploads a **draft**
+GitHub Release with the signed zip, installer DMG, checksums and `appcast.xml`. Review
+and publish the draft on GitHub. `--publish` instead creates a published latest release
+when publication is already authorized. Publishing makes that release available through
+the existing in-app update feed; no GitHub token is stored in the app and no separate
+web server is required.
 
 Every stable release must include both the matching signed archive and `appcast.xml`; GitHub’s automatic source archives alone are not installable updates. Do not edit the signed appcast after generation. Keep the feed attached to the latest stable release. Use a new version for another release rather than replacing published archives.
 

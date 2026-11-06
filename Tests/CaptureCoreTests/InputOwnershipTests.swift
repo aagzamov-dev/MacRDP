@@ -45,3 +45,19 @@ final class InputOwnershipTests: XCTestCase {
         }
     }
 }
+
+extension InputOwnershipTests {
+func testMacModeKeepsSystemShortcutsLocalAndAllowsOrdinaryInput() {
+    for key: UInt16 in [0, 9, 12, 48, 49] {
+        XCTAssertTrue(RemoteKeyboardPolicy.keepsShortcutLocal(mode: .mac, key: key, command: true, control: false))
+        XCTAssertTrue(!RemoteKeyboardPolicy.keepsShortcutLocal(mode: .windows, key: key, command: true, control: false))
+        XCTAssertTrue(!RemoteKeyboardPolicy.keepsShortcutLocal(mode: .mac, key: key, command: false, control: false))
+    }
+    for key: UInt16 in 123...126 {
+        XCTAssertTrue(RemoteKeyboardPolicy.keepsShortcutLocal(mode: .mac, key: key, command: false, control: true))
+    }
+    XCTAssertTrue(RemoteKeyboardPolicy.pastesMacText(mode: .mac, key: 9, command: true, control: false, option: false, shift: false))
+    XCTAssertTrue(!RemoteKeyboardPolicy.pastesMacText(mode: .windows, key: 9, command: true, control: false, option: false, shift: false))
+    XCTAssertTrue(!RemoteKeyboardPolicy.pastesMacText(mode: .mac, key: 9, command: true, control: false, option: false, shift: true))
+}
+}

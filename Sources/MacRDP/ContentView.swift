@@ -38,11 +38,9 @@ struct ContentView: View {
                     Section("Saved PCs") { ForEach(filteredPCs.filter { !$0.favorite && $0.lastConnected == nil }) { pc in pcRow(pc) } }
                 }.listStyle(.sidebar).searchable(text: $search, prompt: "Find a PC")
                 Divider()
-                if let active = model.activePC, model.sessionRunning {
-                    Button {
-                        model.select(active.id); model.showSession = true
-                    } label: {
-                        Label("\(active.name) · \(model.phase.rawValue)", systemImage: "circle.fill")
+                ForEach(model.sessions.filter { $0.sessionRunning }, id: \.activePC?.id) { session in
+                    Button { session.showSession = true } label: {
+                        Label("\(session.activePC?.name ?? "Windows") · \(session.phase.rawValue)", systemImage: "circle.fill")
                             .font(.caption).foregroundStyle(.green).frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain).padding(16)
                 }
@@ -79,7 +77,7 @@ struct ContentView: View {
         } icon: { Image(systemName: pc.favorite ? "star.fill" : "pc") }
         .tag(pc.id)
         .contextMenu {
-            Button("Connect") { model.connect(pc) }.disabled(model.sessionRunning)
+            Button("Connect") { model.connect(pc) }
             Button(pc.favorite ? "Remove favorite" : "Add favorite") { model.toggleFavorite(pc) }
             Button("Duplicate…") { model.duplicatePC(pc) }
             Button("Edit…") { model.editPC(pc) }
@@ -100,22 +98,18 @@ struct ContentView: View {
                 Label(pc.optimizeRetina ? "Optimize for Retina" : "Performance resolution", systemImage: "display")
             }.font(.subheadline).foregroundStyle(.secondary)
             HStack {
-                if model.activePC?.id == pc.id && model.sessionRunning {
-                    Button("Open session") { model.showSession = true }.buttonStyle(.borderedProminent)
+                if model.session(for: pc.id)?.sessionRunning == true {
+                    Button("Open session") { model.showSession(for: pc.id) }.buttonStyle(.borderedProminent)
                 } else {
-                    Button("Connect") { model.connect(pc) }.buttonStyle(.borderedProminent).disabled(model.sessionRunning)
+                    Button("Connect") { model.connect(pc) }.buttonStyle(.borderedProminent)
                 }
                 Button("Edit PC…") { model.editPC(pc) }
-                Button("Delete…", role: .destructive) { deleting = pc }.disabled(model.activePC?.id == pc.id && model.sessionRunning)
+                Button("Delete…", role: .destructive) { deleting = pc }.disabled(model.session(for: pc.id)?.sessionRunning == true)
             }.controlSize(.large)
-            if model.sessionRunning && model.activePC?.id != pc.id {
-                Text("One session at a time. Your current session stays connected while you browse PCs.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             if let last = pc.lastConnected { Text("Last connected \(last.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary) }
-            if model.activePC?.id == pc.id, let failure = model.connectionError {
+            if let failure = model.session(for: pc.id)?.connectionError {
                 Text(failure).foregroundStyle(.red).font(.callout).textSelection(.enabled)
-                Button("Enter login…") { model.connect(pc, askCredentials: true) }.disabled(model.sessionRunning)
+                Button("Enter login…") { model.connect(pc, askCredentials: true) }
             } else if let error = model.error { Text(error).foregroundStyle(.red).font(.caption) }
             Spacer()
             Text("Passwords stay in macOS Keychain. Switching Mac desktops keeps your session open.")
@@ -132,6 +126,8 @@ struct SessionWindowView: View {
             if model.unlocked { SessionPane(model: model) }
             else { ContentUnavailableView("MacRDP is locked", systemImage: "lock", description: Text("Unlock from the menu bar to return to Windows.")) }
         }
+        .sheet(isPresented: $model.keyboardSetup) { KeyboardSetupView(model: model).permitsAppTermination() }
+        .sheet(item: $model.credentialPrompt) { pc in PCEditor(model: model, pc: pc, connecting: true) }
         .sheet(item: $model.certificateRequest) { CertificateView(model: model, request: $0).permitsAppTermination() }
         .frame(minWidth: 640, minHeight: 400)
     }
@@ -141,7 +137,7 @@ struct SessionPane: View {
     @ObservedObject var model: AppModel
     var body: some View {
         GeometryReader { geometry in
-        ZStack(alignment: model.sessionControlsPosition.alignment) {
+        ZStack(alignment: model.effectiveSessionControlsPosition.alignment) {
             SessionSurface(model: model)
                 .zIndex(0)
             if model.isConnecting {
@@ -174,10 +170,10 @@ struct SessionPane: View {
                     .onTapGesture { model.setSessionControlsOpen(false) }
                     .accessibilityLabel("Close session controls")
             }
-            VStack(alignment: model.sessionControlsPosition.horizontalAlignment, spacing: 8) {
-                if model.sessionControlsPosition.isBottom { controlsPanel(availableHeight: geometry.size.height) }
+            VStack(alignment: model.effectiveSessionControlsPosition.horizontalAlignment, spacing: 8) {
+                if model.effectiveSessionControlsPosition.isBottom { controlsPanel(availableHeight: geometry.size.height) }
                 controlsButtons
-                if !model.sessionControlsPosition.isBottom { controlsPanel(availableHeight: geometry.size.height) }
+                if !model.effectiveSessionControlsPosition.isBottom { controlsPanel(availableHeight: geometry.size.height) }
             }
             .padding(12)
             .compositingGroup()
@@ -198,7 +194,7 @@ struct SessionPane: View {
                         .font(.title3)
                     Circle().fill(model.keyboardControlState == .active ? Color.green : Color.orange)
                         .frame(width: 6, height: 6)
-                    Image(systemName: (model.sessionControlsOpen != model.sessionControlsPosition.isBottom) ? "chevron.up" : "chevron.down")
+                    Image(systemName: (model.sessionControlsOpen != model.effectiveSessionControlsPosition.isBottom) ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
                 }.padding(.horizontal, 12).padding(.vertical, 8)
             }
@@ -295,6 +291,10 @@ struct SessionControls: View {
                 Spacer(minLength: 8)
                 Text("\(model.presentedFPS) FPS").monospacedDigit()
             }.font(.caption).foregroundStyle(.secondary)
+            Picker("Controls position", selection: Binding(get: { model.activePC?.sessionControlsPosition }, set: { model.setSessionControlsPosition($0) })) {
+                Text("Use app setting").tag(SessionControlsPosition?.none)
+                ForEach(SessionControlsPosition.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
+            }
             DisclosureGroup("Display & performance", isExpanded: $detailsExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Resolution", selection: Binding(get: { model.activePC?.resolution ?? .dynamic }, set: { model.setDisplay(resolution: $0) })) {
@@ -303,7 +303,7 @@ struct SessionControls: View {
                     Picker("View", selection: Binding(get: { model.activePC?.viewMode ?? .fit }, set: { model.setDisplay(mode: $0) })) {
                         ForEach(DesktopViewMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
-                    if model.activePC?.viewMode == .actual { Text("Switch control to Mac, then scroll to pan.").font(.caption) }
+
                     if !model.dynamicResize { Text("Live resize unavailable. Resolution changes need reconnect.").font(.caption).foregroundStyle(.orange) }
                     Text(model.performanceDetail).font(.caption.monospaced()).textSelection(.enabled)
                     Text("GPU completion includes queue time; it is not network or input latency.").font(.caption2).foregroundStyle(.secondary)
@@ -415,10 +415,17 @@ struct PCEditor: View {
                     Picker("View", selection: $draft.viewMode) {
                         ForEach(DesktopViewMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
+                    Picker("Session controls position", selection: $draft.sessionControlsPosition) {
+                        Text("Use app setting").tag(SessionControlsPosition?.none)
+                        ForEach(SessionControlsPosition.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
+                    }
                     Toggle("Open in full screen", isOn: $draft.openFullScreen)
                     Toggle("Reconnect after network interruptions", isOn: $draft.reconnectAutomatically)
                     Text("Automatic retries use a saved password, stop after five attempts, and never retry a rejected login.").font(.caption).foregroundStyle(.secondary)
                     Toggle("Play Windows audio on this Mac", isOn: $draft.audioPlayback)
+                    Toggle("Use Mac microphone in Windows", isOn: $draft.microphoneCapture)
+                    Text("Microphone access is requested when connecting. Locking MacRDP disconnects microphone-enabled sessions to stop recording. Audio changes apply after reconnecting.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Picker("Typing", selection: $draft.textInputMode) {
                         ForEach(TextInputMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
@@ -519,7 +526,7 @@ struct AppSettings: View {
                     Text(model.keyboardControlDetail).font(.caption).foregroundStyle(.secondary)
                     Button("Test keyboard control…") { openKeyboardTest() }
                     Button(model.restarting ? "Restarting…" : "Restart MacRDP") {
-                        if model.sessionRunning { confirmRestart = true }
+                        if model.hasRunningSessions { confirmRestart = true }
                         else { Task { await model.restartApp() } }
                     }.disabled(model.restarting)
                     Text("After enabling permission, check again. Restart if macOS still denies access.")
@@ -595,7 +602,7 @@ struct AppSettings: View {
                 Section("App security") {
                     Button("Change app PIN…") { model.settings = false; model.error = nil; model.pinChange = true }
                     Button("Reset PIN with Mac account…") { model.settings = false; model.error = nil; model.pinReset = true }
-                    Text("MacRDP starts locked. After unlock, it stays open until you press Lock or quit. Locking the app keeps an established session connected.")
+                    Text("MacRDP starts locked. After unlock, it stays open until you press Lock or quit. Locking disconnects microphone-enabled sessions to stop recording; other established sessions stay connected.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                     }.formStyle(.grouped)
